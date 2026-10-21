@@ -4,10 +4,11 @@ schema: spec-driven
 # This is shown to AI when creating artifacts.
 # Add your tech stack, conventions, style guides, domain knowledge, etc.
 # Example:
-#   context: Frontend:
-  Reflex é a tecnologia obrigatória para implementação
-  das interfaces frontend do projeto.
-#     Tech stack: TypeScript, React, Node.js
+#   context: 
+#     Project: Sistema de E-Commerce de hardware e periféricos
+#     Tech stack: TypeScript, React, Node.js, PostgreSQL, swagger
+#     Development: Implementar mudanças incrementalmente utilizando OpenSpec.
+#     Language: Escrever os artefatos OpenSpec em português brasileiro.
 #     We use conventional commits
 #     Domain: e-commerce platform
 
@@ -16,9 +17,12 @@ schema: spec-driven
 # Example:
 #   rules:
 #     proposal:
+#       - Manter a proposta concisa.
+#       - Explicitar o que está fora do escopo.
 #       - Keep proposals under 500 words
 #       - Always include a "Non-goals" section
 #     tasks:
+#       - Dividir as tarefas em etapas pequenas e verificáveis.
 #       - Break tasks into chunks of max 2 hours
 
 # Per-operation guidance (optional)

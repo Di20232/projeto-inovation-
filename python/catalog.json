@@ -1,0 +1,98 @@
+[
+  {
+    "name": "Notebook Gamer Acer Nitro V15 ANV15-52-57MC",
+    "image_url": "https://images.kabum.com.br/produtos/fotos/1066357/notebook-gamer-acer-nitro-v15-anv15-52-57mc-intel-core-i5-13420h-8gb-ram-ssd-512gb-15-6-fhd-rtx-4050-linux-preto-nh-u1tal-004_1788376786_g.jpg",
+    "source_url": "https://www.kabum.com.br/produto/1066357/notebook-gamer-acer-nitro-v15-anv15-52-57mc-intel-core-i5-13420h-8gb-ram-ssd-512gb-15-6-fhd-rtx-4050-linux-preto-nh-u1tal-004",
+    "price": 5499.0,
+    "description": "Notebook gamer com Intel Core i5-13420H, 8 GB de RAM, SSD de 512 GB e GeForce RTX 4050 para jogos em Full HD.",
+    "category": "Computadores",
+    "specifications": [
+      {
+        "label": "Processador",
+        "value": "Intel Core i5-13420H"
+      },
+      {
+        "label": "Memória RAM",
+        "value": "8 GB"
+      },
+      {
+        "label": "Armazenamento",
+        "value": "SSD de 512 GB"
+      },
+      {
+        "label": "Placa de vídeo",
+        "value": "GeForce RTX 4050"
+      }
+    ]
+  },
+  {
+    "name": "Processador AMD Ryzen 5 5500",
+    "image_url": "https://media.pichau.com.br/media/catalog/product/cache/74c1057f7991b4edb2bc7bdaa94de933/1/0/100-100000457box1.jpg",
+    "source_url": "https://www.pichau.com.br/processador-amd-ryzen-5-5500-6-core-12-threads-3-6ghz-4-2ghz-turbo-cache-19mb-am4-100-100000457box",
+    "price": 559.99,
+    "description": "Processador AM4 com 6 núcleos, 12 threads e frequência turbo de até 4,2 GHz. Preço à vista no Pix.",
+    "category": "Componentes",
+    "specifications": [
+      {
+        "label": "Soquete",
+        "value": "AM4"
+      },
+      {
+        "label": "Núcleos",
+        "value": "6"
+      },
+      {
+        "label": "Threads",
+        "value": "12"
+      },
+      {
+        "label": "Frequência turbo",
+        "value": "Até 4,2 GHz"
+      }
+    ]
+  },
+  {
+    "name": "Mouse Gamer Logitech G203 LIGHTSYNC",
+    "image_url": "https://www.logitechstore.com.br/media/catalog/product/cache/30e6a6b4e0dee7b810006ded283f9c13/g/2/g203-01.png",
+    "source_url": "https://www.logitechstore.com.br/g203-lightsync",
+    "price": 149.90,
+    "description": "Mouse gamer com seis botões programáveis, sensor de até 8.000 DPI e iluminação RGB LIGHTSYNC.",
+    "category": "Periféricos",
+    "specifications": [
+      {
+        "label": "Botões programáveis",
+        "value": "6"
+      },
+      {
+        "label": "Resolução do sensor",
+        "value": "Até 8.000 DPI"
+      },
+      {
+        "label": "Iluminação",
+        "value": "RGB LIGHTSYNC"
+      }
+    ]
+  },
+  {
+    "name": "Mousepad Gamer Fallen Dota2 Sagan RGB",
+    "image_url": "https://fallen.cdn.magazord.com.br/img/2025/06/produto/3839/1-sagan-gr-rgb.png?ims=fit-in/900x900/filters:fill(white)",
+    "source_url": "https://www.fallenstore.com.br/mousepad-gamer-fallen-dota2-sagan-rgb",
+    "price": 99.00,
+    "description": "Mousepad gamer Fallen com estampa Dota2 Sagan RGB, tamanho Grande (45 x 45 cm). Preço à vista no Pix.",
+    "category": "Acessórios",
+    "specifications": [
+      {
+        "label": "Tamanho",
+        "value": "Grande"
+      },
+      {
+        "label": "Dimensões",
+        "value": "45 x 45 cm"
+      },
+      {
+        "label": "Iluminação",
+        "value": "RGB"
+      }
+    ]
+  }
+]

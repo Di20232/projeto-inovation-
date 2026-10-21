@@ -7,3 +7,6 @@ __pycache__/
 .venv/
 **/.venv/
 **/__pycache__/
+.env
+.env.*
+!.env.example
