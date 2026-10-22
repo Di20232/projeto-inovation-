@@ -320,7 +320,7 @@ class RegistrationState(rx.State):
 
     @rx.event
     def set_cpf(self, value: str):
-        self.cpf = value
+        self.cpf = "".join(filter(str.isdigit, value))[:11]
         self.registration_message = ""
         self.registration_succeeded = False
 
@@ -1083,6 +1083,7 @@ def registration_page() -> rx.Component:
                         value=RegistrationState.cpf,
                         on_change=RegistrationState.set_cpf,
                         placeholder="000.000.000-00",
+                        max_length=11,
                         aria_label="CPF",
                         required=True,
                         width="100%",
