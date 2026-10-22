@@ -16,6 +16,7 @@ import reflex as rx
 CATEGORIES = ("Computadores", "Componentes", "Periféricos", "Acessórios")
 CATALOG_PATH = Path(__file__).with_name("catalog.json")
 DEFAULT_XANO_SIGNUP_URL = "https://x8ki-letl-twmt.n7.xano.io/api:nightfall-auth/signup"
+DEFAULT_XANO_PRODUCTS_URL = "https://x8ki-letl-twmt.n7.xano.io/api:nightfall-auth/produto"
 
 
 class Specification(TypedDict):
@@ -39,10 +40,7 @@ class Category(TypedDict):
     available: bool
 
 
-def load_catalog(path: Path = CATALOG_PATH) -> list[Product]:
-    with path.open(encoding="utf-8") as catalog_file:
-        data = json.load(catalog_file)
-
+def parse_catalog_data(data: list[Any]) -> list[Product]:
     if not isinstance(data, list):
         raise ValueError("O catálogo deve ser uma lista JSON de produtos.")
 
@@ -135,6 +133,24 @@ def load_catalog(path: Path = CATALOG_PATH) -> list[Product]:
         )
 
     return products
+
+
+def load_catalog(path: Path = CATALOG_PATH) -> list[Product]:
+    products_url = os.getenv("XANO_PRODUCTS_URL", DEFAULT_XANO_PRODUCTS_URL).strip()
+    if products_url:
+        try:
+            response = httpx.get(products_url, timeout=5.0)
+            if response.status_code == 200:
+                data = response.json()
+                parsed = parse_catalog_data(data)
+                if parsed:
+                    return parsed
+        except Exception:
+            pass
+
+    with path.open(encoding="utf-8") as catalog_file:
+        data = json.load(catalog_file)
+    return parse_catalog_data(data)
 
 
 class CatalogState(rx.State):
