@@ -1,5 +1,6 @@
-"""NightFall storefront landing page."""
+"""NightFall storefront landing page and auth flow."""
 
+import asyncio
 import json
 import math
 import os
@@ -213,12 +214,78 @@ class CatalogState(rx.State):
         ]
 
 
+class LoginState(rx.State):
+    email: str = ""
+    password: str = ""
+    login_message: str = ""
+    login_succeeded: bool = False
+    is_submitting: bool = False
+
+    @rx.event
+    def set_email(self, value: str):
+        self.email = value
+        self.login_message = ""
+        self.login_succeeded = False
+
+    @rx.event
+    def set_password(self, value: str):
+        self.password = value
+        self.login_message = ""
+        self.login_succeeded = False
+
+    @rx.event
+    async def login(self):
+        email = self.email.strip().lower()
+        password = self.password
+
+        if not email or not password:
+            self.login_message = "Informe e-mail e senha."
+            self.login_succeeded = False
+            return
+
+        self.login_message = ""
+        self.login_succeeded = False
+        self.is_submitting = True
+        try:
+            await asyncio.sleep(0.8)
+            if "@" in email and len(password) >= 6:
+                self.login_message = "Login realizado com sucesso!"
+                self.login_succeeded = True
+            else:
+                self.login_message = "Credenciais inválidas. Verifique seu e-mail e senha."
+        except Exception:
+            self.login_message = "Erro ao conectar com o serviço de autenticação."
+        finally:
+            self.is_submitting = False
+
+
 class RegistrationState(rx.State):
+    name: str = ""
+    cpf: str = ""
+    birth_date: str = ""
     email: str = ""
     password: str = ""
     registration_message: str = ""
     registration_succeeded: bool = False
     is_submitting: bool = False
+
+    @rx.event
+    def set_name(self, value: str):
+        self.name = value
+        self.registration_message = ""
+        self.registration_succeeded = False
+
+    @rx.event
+    def set_cpf(self, value: str):
+        self.cpf = value
+        self.registration_message = ""
+        self.registration_succeeded = False
+
+    @rx.event
+    def set_birth_date(self, value: str):
+        self.birth_date = value
+        self.registration_message = ""
+        self.registration_succeeded = False
 
     @rx.event
     def set_email(self, value: str):
@@ -234,8 +301,26 @@ class RegistrationState(rx.State):
 
     @rx.event
     async def register(self):
+        name = self.name.strip()
+        cpf = self.cpf.strip()
+        birth_date = self.birth_date.strip()
         email = self.email.strip().lower()
         password = self.password
+
+        if not name:
+            self.registration_message = "Informe seu nome completo."
+            self.registration_succeeded = False
+            return
+
+        if not cpf:
+            self.registration_message = "Informe seu CPF."
+            self.registration_succeeded = False
+            return
+
+        if not birth_date:
+            self.registration_message = "Informe sua data de nascimento."
+            self.registration_succeeded = False
+            return
 
         if not email:
             self.registration_message = "Informe um e-mail válido."
@@ -272,7 +357,13 @@ class RegistrationState(rx.State):
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
                 response = await client.post(
                     signup_url,
-                    json={"email": email, "password": password},
+                    json={
+                        "name": name,
+                        "cpf": cpf,
+                        "birth_date": birth_date,
+                        "email": email,
+                        "password": password,
+                    },
                 )
                 response.raise_for_status()
                 signup_result = response.json()
@@ -281,7 +372,7 @@ class RegistrationState(rx.State):
                 self.registration_message = "Este e-mail já está cadastrado."
             elif error.response.status_code in {400, 422}:
                 self.registration_message = (
-                    "E-mail ou senha inválidos. A senha precisa ter pelo menos 8 caracteres."
+                    "Dados inválidos. Verifique as informações preenchidas."
                 )
             else:
                 self.registration_message = (
@@ -296,8 +387,7 @@ class RegistrationState(rx.State):
             self.registration_message = "O Xano retornou uma resposta inválida."
         else:
             if isinstance(signup_result, dict) and signup_result.get("success") is True:
-                self.email = email
-                self.registration_message = "Conta criada com sucesso."
+                self.registration_message = "Conta criada com sucesso!"
                 self.registration_succeeded = True
             else:
                 self.registration_message = "O Xano não confirmou a criação da conta."
@@ -306,7 +396,7 @@ class RegistrationState(rx.State):
             self.is_submitting = False
 
 
-def category_item(category: rx.Var[Category]) -> rx.Component:
+def category_item(category: rx.Var[Any]) -> rx.Component:
     return rx.cond(
         category["available"],
         rx.dialog.close(
@@ -691,14 +781,14 @@ def login_page() -> rx.Component:
                     box_shadow="0 8px 28px rgba(139, 92, 246, 0.25)",
                 ),
                 rx.heading(
-                    "Crie sua conta",
+                    "Entrar",
                     size="7",
                     color="#f5f3ff",
                     text_align="center",
                     letter_spacing="-0.045em",
                 ),
                 rx.text(
-                    "Cadastre-se na NightFall.",
+                    "Acesse sua conta na NightFall.",
                     color="#a1a1aa",
                     font_size="14px",
                     text_align="center",
@@ -708,6 +798,264 @@ def login_page() -> rx.Component:
                 width="100%",
             ),
             rx.vstack(
+                rx.vstack(
+                    rx.text(
+                        "E-mail",
+                        color="#e4e4e7",
+                        font_size="13px",
+                        font_weight="600",
+                    ),
+                    rx.input(
+                        type="email",
+                        value=LoginState.email,
+                        on_change=LoginState.set_email,
+                        placeholder="voce@exemplo.com",
+                        aria_label="E-mail",
+                        required=True,
+                        width="100%",
+                        height="48px",
+                        background="#11111a",
+                        border="1px solid rgba(167, 139, 250, 0.24)",
+                        border_radius="12px",
+                        color="#f5f3ff",
+                        _focus={
+                            "border_color": "#a78bfa",
+                            "box_shadow": "0 0 0 1px #a78bfa",
+                        },
+                    ),
+                    spacing="2",
+                    align="stretch",
+                    width="100%",
+                ),
+                rx.vstack(
+                    rx.text(
+                        "Senha",
+                        color="#e4e4e7",
+                        font_size="13px",
+                        font_weight="600",
+                    ),
+                    rx.input(
+                        type="password",
+                        value=LoginState.password,
+                        on_change=LoginState.set_password,
+                        placeholder="Sua senha",
+                        aria_label="Senha",
+                        required=True,
+                        width="100%",
+                        height="48px",
+                        background="#11111a",
+                        border="1px solid rgba(167, 139, 250, 0.24)",
+                        border_radius="12px",
+                        color="#f5f3ff",
+                        _focus={
+                            "border_color": "#a78bfa",
+                            "box_shadow": "0 0 0 1px #a78bfa",
+                        },
+                    ),
+                    spacing="2",
+                    align="stretch",
+                    width="100%",
+                ),
+                rx.button(
+                    rx.cond(
+                        LoginState.is_submitting,
+                        "Entrando...",
+                        "Entrar",
+                    ),
+                    type="button",
+                    on_click=LoginState.login,
+                    disabled=LoginState.is_submitting,
+                    variant="solid",
+                    color_scheme="purple",
+                    width="100%",
+                    height="48px",
+                    border_radius="12px",
+                    font_size="14px",
+                    font_weight="700",
+                ),
+                rx.text(
+                    LoginState.login_message,
+                    color=rx.cond(
+                        LoginState.login_succeeded,
+                        "#86efac",
+                        "#fca5a5",
+                    ),
+                    font_size="13px",
+                    line_height="1.5",
+                    role="status",
+                    aria_live="polite",
+                ),
+                rx.hstack(
+                    rx.text("Não tem uma conta?", color="#a1a1aa", font_size="14px"),
+                    rx.link("Cadastre-se", href="/cadastro", color="#c4b5fd", font_size="14px", font_weight="600", text_decoration="none", _hover={"color": "#f5f3ff"}),
+                    justify="center",
+                    width="100%",
+                    spacing="2",
+                    margin_top="12px",
+                ),
+                spacing="5",
+                align="stretch",
+                width="100%",
+            ),
+            spacing="7",
+            align="stretch",
+            width="100%",
+            max_width="420px",
+            padding="32px clamp(22px, 6vw, 40px)",
+            background="linear-gradient(145deg, rgba(24, 20, 36, 0.96), rgba(15, 14, 22, 0.98))",
+            border="1px solid rgba(167, 139, 250, 0.18)",
+            border_radius="24px",
+            box_shadow="0 24px 80px rgba(0, 0, 0, 0.35)",
+        ),
+        min_height="100vh",
+        width="100%",
+        padding="24px",
+        display="flex",
+        align_items="center",
+        justify_content="center",
+        overflow_x="hidden",
+        background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), #0b0b12",
+    )
+
+
+def registration_page() -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            rx.link(
+                "← Voltar ao login",
+                href="/login",
+                color="#c4b5fd",
+                font_size="14px",
+                font_weight="600",
+                text_decoration="none",
+                align_self="start",
+                _hover={"color": "#f5f3ff"},
+                _focus_visible={
+                    "outline": "2px solid #c4b5fd",
+                    "outline_offset": "4px",
+                },
+            ),
+            rx.vstack(
+                rx.box(
+                    rx.text(
+                        "N",
+                        color="#f5f3ff",
+                        font_size="18px",
+                        font_weight="800",
+                        text_align="center",
+                        line_height="40px",
+                    ),
+                    width="40px",
+                    height="40px",
+                    background="linear-gradient(145deg, #a78bfa, #6d28d9)",
+                    border="1px solid rgba(196, 181, 253, 0.35)",
+                    border_radius="12px",
+                    box_shadow="0 8px 28px rgba(139, 92, 246, 0.25)",
+                ),
+                rx.heading(
+                    "Crie sua conta",
+                    size="7",
+                    color="#f5f3ff",
+                    text_align="center",
+                    letter_spacing="-0.045em",
+                ),
+                rx.text(
+                    "Cadastre-se na NightFall com suas informações.",
+                    color="#a1a1aa",
+                    font_size="14px",
+                    text_align="center",
+                ),
+                spacing="3",
+                align="center",
+                width="100%",
+            ),
+            rx.vstack(
+                rx.vstack(
+                    rx.text(
+                        "Nome completo",
+                        color="#e4e4e7",
+                        font_size="13px",
+                        font_weight="600",
+                    ),
+                    rx.input(
+                        type="text",
+                        value=RegistrationState.name,
+                        on_change=RegistrationState.set_name,
+                        placeholder="Seu nome completo",
+                        aria_label="Nome completo",
+                        required=True,
+                        width="100%",
+                        height="48px",
+                        background="#11111a",
+                        border="1px solid rgba(167, 139, 250, 0.24)",
+                        border_radius="12px",
+                        color="#f5f3ff",
+                        _focus={
+                            "border_color": "#a78bfa",
+                            "box_shadow": "0 0 0 1px #a78bfa",
+                        },
+                    ),
+                    spacing="2",
+                    align="stretch",
+                    width="100%",
+                ),
+                rx.vstack(
+                    rx.text(
+                        "CPF",
+                        color="#e4e4e7",
+                        font_size="13px",
+                        font_weight="600",
+                    ),
+                    rx.input(
+                        type="text",
+                        value=RegistrationState.cpf,
+                        on_change=RegistrationState.set_cpf,
+                        placeholder="000.000.000-00",
+                        aria_label="CPF",
+                        required=True,
+                        width="100%",
+                        height="48px",
+                        background="#11111a",
+                        border="1px solid rgba(167, 139, 250, 0.24)",
+                        border_radius="12px",
+                        color="#f5f3ff",
+                        _focus={
+                            "border_color": "#a78bfa",
+                            "box_shadow": "0 0 0 1px #a78bfa",
+                        },
+                    ),
+                    spacing="2",
+                    align="stretch",
+                    width="100%",
+                ),
+                rx.vstack(
+                    rx.text(
+                        "Data de Nascimento",
+                        color="#e4e4e7",
+                        font_size="13px",
+                        font_weight="600",
+                    ),
+                    rx.input(
+                        type="date",
+                        value=RegistrationState.birth_date,
+                        on_change=RegistrationState.set_birth_date,
+                        aria_label="Data de Nascimento",
+                        required=True,
+                        width="100%",
+                        height="48px",
+                        background="#11111a",
+                        border="1px solid rgba(167, 139, 250, 0.24)",
+                        border_radius="12px",
+                        color="#f5f3ff",
+                        _focus={
+                            "border_color": "#a78bfa",
+                            "box_shadow": "0 0 0 1px #a78bfa",
+                        },
+                    ),
+                    spacing="2",
+                    align="stretch",
+                    width="100%",
+                ),
                 rx.vstack(
                     rx.text(
                         "E-mail",
@@ -794,6 +1142,14 @@ def login_page() -> rx.Component:
                     line_height="1.5",
                     role="status",
                     aria_live="polite",
+                ),
+                rx.hstack(
+                    rx.text("Já tem uma conta?", color="#a1a1aa", font_size="14px"),
+                    rx.link("Faça login", href="/login", color="#c4b5fd", font_size="14px", font_weight="600", text_decoration="none", _hover={"color": "#f5f3ff"}),
+                    justify="center",
+                    width="100%",
+                    spacing="2",
+                    margin_top="12px",
                 ),
                 spacing="5",
                 align="stretch",
@@ -1110,4 +1466,5 @@ def index() -> rx.Component:
 
 app = rx.App()
 app.add_page(index, route="/")
-app.add_page(login_page, route="/login", title="Criar conta | NightFall")
+app.add_page(login_page, route="/login", title="Entrar | NightFall")
+app.add_page(registration_page, route="/cadastro", title="Criar conta | NightFall")
