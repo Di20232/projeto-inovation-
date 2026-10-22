@@ -278,6 +278,30 @@ class LoginState(rx.State):
             self.is_submitting = False
 
 
+def validate_cpf(cpf: str) -> bool:
+    digits = "".join(filter(str.isdigit, cpf))
+    if len(digits) != 11:
+        return False
+    if digits == digits[0] * 11:
+        return False
+
+    s = sum(int(digits[i]) * (10 - i) for i in range(9))
+    digit1 = (s * 10) % 11
+    if digit1 == 10:
+        digit1 = 0
+    if digit1 != int(digits[9]):
+        return False
+
+    s = sum(int(digits[i]) * (11 - i) for i in range(10))
+    digit2 = (s * 10) % 11
+    if digit2 == 10:
+        digit2 = 0
+    if digit2 != int(digits[10]):
+        return False
+
+    return True
+
+
 class RegistrationState(rx.State):
     name: str = ""
     cpf: str = ""
@@ -333,6 +357,11 @@ class RegistrationState(rx.State):
 
         if not cpf:
             self.registration_message = "Informe seu CPF."
+            self.registration_succeeded = False
+            return
+
+        if not validate_cpf(cpf):
+            self.registration_message = "CPF inválido. Verifique o número informado."
             self.registration_succeeded = False
             return
 
