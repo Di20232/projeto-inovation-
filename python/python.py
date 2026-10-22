@@ -198,6 +198,11 @@ class CatalogState(rx.State):
         self.category_menu_open = False
 
     @rx.event
+    def select_category(self, category: str):
+        self.selected_category = category
+        self.category_menu_open = False
+
+    @rx.event
     def set_search_query(self, query: str):
         self.search_query = query
 
