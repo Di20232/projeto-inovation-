@@ -140,6 +140,7 @@ def load_catalog(path: Path = CATALOG_PATH) -> list[Product]:
 class CatalogState(rx.State):
     products: list[Product] = load_catalog()
     selected_category: str = "Todos"
+    search_query: str = ""
     category_menu_open: bool = False
     product_details_open: bool = False
     selected_product_name: str = ""
@@ -157,7 +158,12 @@ class CatalogState(rx.State):
     @rx.event
     def show_all_products(self):
         self.selected_category = "Todos"
+        self.search_query = ""
         self.category_menu_open = False
+
+    @rx.event
+    def set_search_query(self, query: str):
+        self.search_query = query
 
     @rx.event
     def set_category_menu_open(self, is_open: bool):
@@ -193,13 +199,26 @@ class CatalogState(rx.State):
 
     @rx.var
     def filtered_products(self) -> list[Product]:
-        if self.selected_category == "Todos":
-            return self.products
-        return [
-            product
-            for product in self.products
-            if product["category"] == self.selected_category
-        ]
+        prods = self.products
+        if self.selected_category != "Todos":
+            prods = [p for p in prods if p["category"] == self.selected_category]
+
+        q = self.search_query.strip().lower()
+        if not q:
+            return prods
+
+        filtered = []
+        for product in prods:
+            searchable_text = " ".join(
+                [product["name"], product["description"], product["category"]]
+                + [
+                    f"{specification['label']} {specification['value']}"
+                    for specification in product["specifications"]
+                ]
+            ).lower()
+            if q in searchable_text:
+                filtered.append(product)
+        return filtered
 
     @rx.var
     def categories(self) -> list[Category]:
@@ -666,6 +685,26 @@ def product_details_dialog() -> rx.Component:
 
 def product_catalog() -> rx.Component:
     return rx.vstack(
+        rx.vstack(
+            rx.input(
+                placeholder="Pesquisar produtos, marcas ou especificações...",
+                value=CatalogState.search_query,
+                on_change=CatalogState.set_search_query,
+                width="100%",
+                height="48px",
+                background="#11111a",
+                border="1px solid rgba(167, 139, 250, 0.24)",
+                border_radius="12px",
+                color="#f5f3ff",
+                _focus={
+                    "border_color": "#a78bfa",
+                    "box_shadow": "0 0 0 1px #a78bfa",
+                },
+                aria_label="Pesquisar produtos",
+            ),
+            width="100%",
+            spacing="2",
+        ),
         rx.hstack(
             rx.heading("Catálogo", size="6", color="#f5f3ff"),
             rx.button(
@@ -687,7 +726,11 @@ def product_catalog() -> rx.Component:
                 width="100%",
             ),
             rx.text(
-                "Nenhum produto disponível nesta categoria.",
+                rx.cond(
+                    CatalogState.search_query.strip() != "",
+                    "Nenhum produto encontrado para essa pesquisa.",
+                    "Nenhum produto disponível nesta categoria.",
+                ),
                 color="#a1a1aa",
                 text_align="center",
                 width="100%",
