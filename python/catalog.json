@@ -22,6 +22,10 @@
       {
         "label": "Placa de vídeo",
         "value": "GeForce RTX 4050"
+      },
+      {
+        "label": "Marca",
+        "value": "Acer"
       }
     ]
   },
@@ -48,6 +52,92 @@
       {
         "label": "Frequência turbo",
         "value": "Até 4,2 GHz"
+      },
+      {
+        "label": "Marca",
+        "value": "AMD"
+      }
+    ]
+  },
+  {
+    "name": "Placa de Vídeo Gigabyte GeForce RTX 4060 Eagle OC",
+    "image_url": "https://images.kabum.com.br/produtos/fotos/471415/placa-de-video-rtx-4060-eagle-oc-8g-gigabyte-nvidia-geforce-8gb-gddr6-dlss-3-rgb-gv-n4060eagle-oc-8gd_1685387431_g.jpg",
+    "source_url": "https://www.kabum.com.br/produto/471415/placa-de-video-rtx-4060-eagle-oc-8g-gigabyte-nvidia-geforce-8gb-gddr6-dlss-3-rgb",
+    "price": 2199.90,
+    "description": "Placa de vídeo GeForce RTX 4060 com 8GB GDDR6, tecnologia DLSS 3 e resfriamento avançado WINDFORCE.",
+    "category": "Componentes",
+    "specifications": [
+      {
+        "label": "Chipset",
+        "value": "NVIDIA GeForce RTX 4060"
+      },
+      {
+        "label": "Memória VRAM",
+        "value": "8GB GDDR6"
+      },
+      {
+        "label": "Interface",
+        "value": "PCI Express 4.0"
+      },
+      {
+        "label": "Marca",
+        "value": "Gigabyte"
+      }
+    ]
+  },
+  {
+    "name": "SSD M.2 NVMe Kingston NV2 1TB",
+    "image_url": "https://images.kabum.com.br/produtos/fotos/380745/ssd-1-tb-kingston-nv2-m-2-2280-pcie-4-0-nvme-snv2s-1000g_1666879799_g.jpg",
+    "source_url": "https://www.kabum.com.br/produto/380745/ssd-1-tb-kingston-nv2-m-2-2280-pcie-4-0-nvme-snv2s-1000g",
+    "price": 439.90,
+    "description": "SSD Kingston NV2 de 1TB M.2 2280 NVMe PCIe 4.0 com velocidades de leitura de até 3500 MB/s.",
+    "category": "Componentes",
+    "specifications": [
+      {
+        "label": "Capacidade",
+        "value": "1TB"
+      },
+      {
+        "label": "Interface",
+        "value": "NVMe PCIe 4.0"
+      },
+      {
+        "label": "Leitura Sequencial",
+        "value": "Até 3500 MB/s"
+      },
+      {
+        "label": "Marca",
+        "value": "Kingston"
+      }
+    ]
+  },
+  {
+    "name": "Monitor Gamer LG UltraGear 27\" Full HD 180Hz",
+    "image_url": "https://images.kabum.com.br/produtos/fotos/543169/monitor-gamer-lg-ultragear-27-fhd-180hz-1ms-ips-hdmi-e-displayport-srgb-99-hdr-10-sync-27gs50f-b_1715096531_g.jpg",
+    "source_url": "https://www.kabum.com.br/produto/543169/monitor-gamer-lg-ultragear-27-fhd-180hz-1ms-ips-hdmi-e-displayport-srgb-99-hdr-10-sync-27gs50f-b",
+    "price": 999.90,
+    "description": "Monitor gamer LG UltraGear de 27 polegadas Full HD com painel IPS, 180Hz de taxa de atualização e 1ms de resposta.",
+    "category": "Periféricos",
+    "specifications": [
+      {
+        "label": "Tamanho da Tela",
+        "value": "27 polegadas"
+      },
+      {
+        "label": "Taxa de Atualização",
+        "value": "180Hz"
+      },
+      {
+        "label": "Tempo de Resposta",
+        "value": "1ms (GtG)"
+      },
+      {
+        "label": "Painel",
+        "value": "IPS"
+      },
+      {
+        "label": "Marca",
+        "value": "LG"
       }
     ]
   },
@@ -70,6 +160,62 @@
       {
         "label": "Iluminação",
         "value": "RGB LIGHTSYNC"
+      },
+      {
+        "label": "Marca",
+        "value": "Logitech"
+      }
+    ]
+  },
+  {
+    "name": "Teclado Mecânico Gamer Redragon Kumara LED Vermelho",
+    "image_url": "https://images.kabum.com.br/produtos/fotos/84703/teclado-mecanico-gamer-redragon-kumara-abnt2-rgb-switch-outemu-purple-k552-kr_1614798363_g.jpg",
+    "source_url": "https://www.kabum.com.br/produto/84703/teclado-mecanico-gamer-redragon-kumara-abnt2-rgb-switch-outemu-purple-k552-kr",
+    "price": 199.90,
+    "description": "Teclado mecânico compacto ABNT2 com switches de alta durabilidade e iluminação em LED.",
+    "category": "Periféricos",
+    "specifications": [
+      {
+        "label": "Layout",
+        "value": "ABNT2"
+      },
+      {
+        "label": "Switch",
+        "value": "Outemu Mechanical"
+      },
+      {
+        "label": "Iluminação",
+        "value": "LED Vermelho"
+      },
+      {
+        "label": "Marca",
+        "value": "Redragon"
+      }
+    ]
+  },
+  {
+    "name": "Headset Gamer HyperX Cloud Stinger 2",
+    "image_url": "https://images.kabum.com.br/produtos/fotos/380742/headset-gamer-hyperx-cloud-stinger-2-drivers-de-50mm-pc-ps5-ps4-xbox-switch-preto-hecs2-pk-bk-g_1666878170_g.jpg",
+    "source_url": "https://www.kabum.com.br/produto/380742/headset-gamer-hyperx-cloud-stinger-2-drivers-de-50mm-pc-ps5-ps4-xbox-switch-preto-hecs2-pk-bk-g",
+    "price": 279.90,
+    "description": "Headset gamer leve com som imersivo, drivers de 50mm e conforto duradouro para longas sessões.",
+    "category": "Periféricos",
+    "specifications": [
+      {
+        "label": "Drivers",
+        "value": "50mm"
+      },
+      {
+        "label": "Conexão",
+        "value": "P2 3.5mm"
+      },
+      {
+        "label": "Compatibilidade",
+        "value": "PC, Consoles e Mobile"
+      },
+      {
+        "label": "Marca",
+        "value": "HyperX"
       }
     ]
   },
@@ -92,6 +238,36 @@
       {
         "label": "Iluminação",
         "value": "RGB"
+      },
+      {
+        "label": "Marca",
+        "value": "Fallen"
+      }
+    ]
+  },
+  {
+    "name": "Water Cooler Rise Mode Gamer Black 240mm",
+    "image_url": "https://images.kabum.com.br/produtos/fotos/128561/water-cooler-rise-mode-gamer-black-240mm-rgb-rm-wc-02-fb_1611082531_g.jpg",
+    "source_url": "https://www.kabum.com.br/produto/128561/water-cooler-rise-mode-gamer-black-240mm-rgb-rm-wc-02-fb",
+    "price": 299.90,
+    "description": "Water cooler de 240mm com iluminação RGB e alto desempenho de refrigeração para processadores de alta performance.",
+    "category": "Computadores",
+    "specifications": [
+      {
+        "label": "Radiador",
+        "value": "240mm"
+      },
+      {
+        "label": "Iluminação",
+        "value": "RGB"
+      },
+      {
+        "label": "Compatibilidade",
+        "value": "Intel e AMD"
+      },
+      {
+        "label": "Marca",
+        "value": "Rise Mode"
       }
     ]
   }
