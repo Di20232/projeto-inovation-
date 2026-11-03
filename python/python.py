@@ -12,17 +12,14 @@ from urllib.parse import urlparse
 import httpx
 import reflex as rx
 
-
 CATEGORIES = ("Computadores", "Componentes", "Periféricos", "Acessórios")
 CATALOG_PATH = Path(__file__).with_name("catalog.json")
 DEFAULT_XANO_SIGNUP_URL = "https://x8ki-letl-twmt.n7.xano.io/api:nightfall-auth/signup"
 DEFAULT_XANO_PRODUCTS_URL = "https://x8ki-letl-twmt.n7.xano.io/api:nightfall-auth/produto"
 
-
 class Specification(TypedDict):
     label: str
     value: str
-
 
 class Product(TypedDict):
     name: str
@@ -34,11 +31,9 @@ class Product(TypedDict):
     category: str
     specifications: list[Specification]
 
-
 class Category(TypedDict):
     name: str
     available: bool
-
 
 class CartItem(TypedDict):
     name: str
@@ -47,6 +42,17 @@ class CartItem(TypedDict):
     price_display: str
     quantity: int
 
+class AddressItem(TypedDict):
+    id: str
+    title: str
+    street: str
+    number: str
+    complement: str
+    neighborhood: str
+    city: str
+    state: str
+    cep: str
+    is_main: bool
 
 def parse_catalog_data(data: list[Any]) -> list[Product]:
     if not isinstance(data, list):
@@ -142,7 +148,6 @@ def parse_catalog_data(data: list[Any]) -> list[Product]:
 
     return products
 
-
 def load_catalog(path: Path = CATALOG_PATH) -> list[Product]:
     products_url = os.getenv("XANO_PRODUCTS_URL", DEFAULT_XANO_PRODUCTS_URL).strip()
     if products_url:
@@ -159,7 +164,6 @@ def load_catalog(path: Path = CATALOG_PATH) -> list[Product]:
     with path.open(encoding="utf-8") as catalog_file:
         data = json.load(catalog_file)
     return parse_catalog_data(data)
-
 
 class CatalogState(rx.State):
     products: list[Product] = load_catalog()
@@ -545,18 +549,157 @@ class CatalogState(rx.State):
                         brands.append(brand)
         return sorted(brands)
 
-
 class AuthState(rx.State):
     is_logged_in: bool = False
     user_name: str = ""
     user_email: str = ""
     user_phone: str = "(11) 98888-7777"
-    user_cpf: str = ""
-    user_birth_date: str = ""
+    user_cpf: str = "123.456.789-09"
+    user_birth_date: str = "15/05/1995"
     profile_message: str = ""
     profile_tab: str = "dados"
     redirect_after_login: str = ""
     logout_dialog_open: bool = False
+
+    addresses: list[AddressItem] = [
+        {
+            "id": "1",
+            "title": "Endereço Principal",
+            "street": "Praça da Sé",
+            "number": "100",
+            "complement": "Sé",
+            "neighborhood": "Sé",
+            "city": "São Paulo",
+            "state": "SP",
+            "cep": "01001-000",
+            "is_main": True,
+        }
+    ]
+    is_adding_address: bool = False
+    new_address_title: str = "Casa"
+    new_address_cep: str = ""
+    new_address_street: str = ""
+    new_address_number: str = ""
+    new_address_complement: str = ""
+    new_address_neighborhood: str = ""
+    new_address_city: str = ""
+    new_address_state: str = ""
+    address_message: str = ""
+
+    @rx.event
+    def toggle_add_address_form(self):
+        self.is_adding_address = not self.is_adding_address
+        self.address_message = ""
+
+    @rx.event
+    def set_new_address_title(self, val: str):
+        self.new_address_title = val
+
+    @rx.event
+    def set_new_address_cep(self, val: str):
+        digits = "".join(filter(str.isdigit, val))[:8]
+        if len(digits) <= 5:
+            self.new_address_cep = digits
+        else:
+            self.new_address_cep = f"{digits[:5]}-{digits[5:]}"
+
+        if len(digits) == 8:
+            try:
+                url = f"https://viacep.com.br/ws/{digits}/json/"
+                response = httpx.get(url, timeout=3.0)
+                if response.status_code == 200:
+                    data = response.json()
+                    if not data.get("erro"):
+                        self.new_address_street = data.get("logradouro", "")
+                        self.new_address_neighborhood = data.get("bairro", "")
+                        self.new_address_city = data.get("localidade", "")
+                        self.new_address_state = data.get("uf", "")
+            except Exception:
+                pass
+
+    @rx.event
+    def set_new_address_street(self, val: str):
+        self.new_address_street = val
+
+    @rx.event
+    def set_new_address_number(self, val: str):
+        self.new_address_number = "".join(filter(str.isdigit, val))
+
+    @rx.event
+    def set_new_address_complement(self, val: str):
+        self.new_address_complement = val
+
+    @rx.event
+    def set_new_address_neighborhood(self, val: str):
+        self.new_address_neighborhood = val
+
+    @rx.event
+    def set_new_address_city(self, val: str):
+        self.new_address_city = val
+
+    @rx.event
+    def set_new_address_state(self, val: str):
+        self.new_address_state = val
+
+    @rx.event
+    def add_address(self):
+        title = self.new_address_title.strip() or "Endereço"
+        cep = self.new_address_cep.strip()
+        street = self.new_address_street.strip()
+        number = self.new_address_number.strip()
+        city = self.new_address_city.strip()
+        state = self.new_address_state.strip()
+
+        if not cep or not street or not number or not city or not state:
+            self.address_message = "Preencha CEP, logradouro, número, cidade e estado."
+            return
+
+        new_id = str(len(self.addresses) + 1)
+        is_first = len(self.addresses) == 0
+
+        if is_first or not any(a.get("is_main") for a in self.addresses):
+            for a in self.addresses:
+                a["is_main"] = False
+            is_main = True
+        else:
+            is_main = False
+
+        new_addr: AddressItem = {
+            "id": new_id,
+            "title": title,
+            "street": street,
+            "number": number,
+            "complement": self.new_address_complement.strip(),
+            "neighborhood": self.new_address_neighborhood.strip(),
+            "city": city,
+            "state": state,
+            "cep": cep,
+            "is_main": is_main,
+        }
+        self.addresses.append(new_addr)
+        self.is_adding_address = False
+        self.address_message = "Endereço cadastrado com sucesso!"
+        self.new_address_title = "Casa"
+        self.new_address_cep = ""
+        self.new_address_street = ""
+        self.new_address_number = ""
+        self.new_address_complement = ""
+        self.new_address_neighborhood = ""
+        self.new_address_city = ""
+        self.new_address_state = ""
+
+    @rx.event
+    def set_main_address(self, address_id: str):
+        for a in self.addresses:
+            a["is_main"] = (a["id"] == address_id)
+        self.address_message = "Endereço principal atualizado!"
+
+    @rx.event
+    def delete_address(self, address_id: str):
+        self.addresses = [a for a in self.addresses if a["id"] != address_id]
+        if self.addresses and not any(a.get("is_main") for a in self.addresses):
+            self.addresses[0]["is_main"] = True
+        self.address_message = "Endereço removido com sucesso!"
 
     @rx.event
     def set_profile_tab(self, tab: str):
@@ -574,14 +717,18 @@ class AuthState(rx.State):
 
     @rx.event
     def set_user_birth_date(self, value: str):
-        self.user_birth_date = value
+        self.user_birth_date = format_birth_date(value)
         self.profile_message = ""
 
     @rx.event
-    def update_profile(self, name: str):
-        if name.strip():
-            self.user_name = name.strip()
-            self.profile_message = "Perfil atualizado com sucesso!"
+    def set_user_name(self, name: str):
+        self.user_name = name
+        self.profile_message = ""
+
+    @rx.event
+    def save_profile(self):
+        if self.user_name.strip():
+            self.profile_message = "Dados cadastrais atualizados com sucesso!"
         else:
             self.profile_message = "Informe um nome válido."
 
@@ -596,7 +743,6 @@ class AuthState(rx.State):
         self.user_email = ""
         self.logout_dialog_open = False
         return rx.redirect("/")
-
 
 class LoginState(rx.State):
     email: str = ""
@@ -642,6 +788,10 @@ class LoginState(rx.State):
                 auth_state.user_email = email
                 name_part = email.split("@")[0]
                 auth_state.user_name = name_part.capitalize()
+                if not auth_state.user_cpf:
+                    auth_state.user_cpf = "123.456.789-09"
+                if not auth_state.user_birth_date:
+                    auth_state.user_birth_date = "15/05/1995"
 
                 target = auth_state.redirect_after_login if auth_state.redirect_after_login else "/"
                 auth_state.redirect_after_login = ""
@@ -657,7 +807,6 @@ class LoginState(rx.State):
             self.login_message = "Erro ao conectar com o serviço de autenticação."
         finally:
             self.is_submitting = False
-
 
 def validate_cpf(cpf: str) -> bool:
     digits = "".join(filter(str.isdigit, cpf))
@@ -682,7 +831,6 @@ def validate_cpf(cpf: str) -> bool:
 
     return True
 
-
 def format_cpf(value: str) -> str:
     digits = "".join(filter(str.isdigit, value))[:11]
     if len(digits) <= 3:
@@ -694,6 +842,14 @@ def format_cpf(value: str) -> str:
     else:
         return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:]}"
 
+def format_birth_date(value: str) -> str:
+    digits = "".join(filter(str.isdigit, value))[:8]
+    if len(digits) <= 2:
+        return digits
+    elif len(digits) <= 4:
+        return f"{digits[:2]}/{digits[2:]}"
+    else:
+        return f"{digits[:2]}/{digits[2:4]}/{digits[4:]}"
 
 class RegistrationState(rx.State):
     name: str = ""
@@ -719,7 +875,7 @@ class RegistrationState(rx.State):
 
     @rx.event
     def set_birth_date(self, value: str):
-        self.birth_date = value
+        self.birth_date = format_birth_date(value)
         self.registration_message = ""
         self.registration_succeeded = False
 
@@ -839,7 +995,6 @@ class RegistrationState(rx.State):
             self.password = ""
             self.is_submitting = False
 
-
 def category_item(category: rx.Var[Any]) -> rx.Component:
     return rx.cond(
         category["available"],
@@ -906,7 +1061,6 @@ def category_item(category: rx.Var[Any]) -> rx.Component:
         ),
     )
 
-
 def product_card(product: rx.Var[Product]) -> rx.Component:
     return rx.button(
         rx.vstack(
@@ -934,6 +1088,7 @@ def product_card(product: rx.Var[Product]) -> rx.Component:
                 font_size="14px",
                 line_height="1.6",
             ),
+            rx.spacer(),
             rx.text(
                 product["price_display"],
                 color="#e9d5ff",
@@ -943,13 +1098,15 @@ def product_card(product: rx.Var[Product]) -> rx.Component:
             width="100%",
             align="start",
             spacing="3",
+            flex="1",
         ),
         on_click=CatalogState.open_product_details(product["name"]),
         aria_label=f"Ver detalhes de {product['name']}",
         variant="ghost",
         width="340px",
-        flex="1 1 320px",
+        flex="1 1 340px",
         max_width="420px",
+        min_height="460px",
         height="100%",
         padding="18px",
         color="#f5f3ff",
@@ -969,7 +1126,6 @@ def product_card(product: rx.Var[Product]) -> rx.Component:
             "transform": "translateY(-4px)",
         },
     )
-
 
 def specification_row(specification: rx.Var[Specification]) -> rx.Component:
     return rx.hstack(
@@ -997,7 +1153,6 @@ def specification_row(specification: rx.Var[Specification]) -> rx.Component:
         padding_y="12px",
         border_bottom="1px solid rgba(167, 139, 250, 0.12)",
     )
-
 
 def product_details_dialog() -> rx.Component:
     return rx.dialog.root(
@@ -1119,7 +1274,6 @@ def product_details_dialog() -> rx.Component:
         on_open_change=CatalogState.set_product_details_open,
     )
 
-
 def cart_item_row(item: rx.Var[CartItem]) -> rx.Component:
     return rx.hstack(
         rx.image(
@@ -1171,7 +1325,6 @@ def cart_item_row(item: rx.Var[CartItem]) -> rx.Component:
         padding_y="12px",
         border_bottom="1px solid rgba(167, 139, 250, 0.12)",
     )
-
 
 def cart_page() -> rx.Component:
     return rx.box(
@@ -1381,6 +1534,99 @@ def cart_page() -> rx.Component:
         background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
     )
 
+def advanced_filters_panel() -> rx.Component:
+    return rx.vstack(
+        rx.hstack(
+            rx.text("Filtros Avançados", color="#f5f3ff", font_size="15px", font_weight="700"),
+            rx.button(
+                "Limpar Filtros",
+                on_click=CatalogState.clear_filters,
+                variant="ghost",
+                color_scheme="purple",
+                size="1",
+            ),
+            width="100%",
+            justify="between",
+            align="center",
+        ),
+        # Price range inputs
+        rx.hstack(
+            rx.vstack(
+                rx.text("Preço Mínimo (R$)", color="#a1a1aa", font_size="12px", font_weight="600"),
+                rx.input(
+                    placeholder="Ex: 500",
+                    value=CatalogState.min_price,
+                    on_change=CatalogState.set_min_price,
+                    width="100%",
+                    height="38px",
+                    background="#11111a",
+                    border="1px solid rgba(167, 139, 250, 0.24)",
+                    border_radius="10px",
+                    color="#f5f3ff",
+                    font_size="13px",
+                ),
+                width="100%",
+                spacing="1",
+                align="start",
+            ),
+            rx.vstack(
+                rx.text("Preço Máximo (R$)", color="#a1a1aa", font_size="12px", font_weight="600"),
+                rx.input(
+                    placeholder="Ex: 5000",
+                    value=CatalogState.max_price,
+                    on_change=CatalogState.set_max_price,
+                    width="100%",
+                    height="38px",
+                    background="#11111a",
+                    border="1px solid rgba(167, 139, 250, 0.24)",
+                    border_radius="10px",
+                    color="#f5f3ff",
+                    font_size="13px",
+                ),
+                width="100%",
+                spacing="1",
+                align="start",
+            ),
+            width="100%",
+            spacing="3",
+        ),
+        # Brand filter pills
+        rx.vstack(
+            rx.text("Marca", color="#a1a1aa", font_size="12px", font_weight="600"),
+            rx.flex(
+                rx.button(
+                    "Todas",
+                    on_click=CatalogState.set_selected_brand("Todas"),
+                    variant=rx.cond(CatalogState.selected_brand == "Todas", "solid", "soft"),
+                    color_scheme="purple",
+                    size="1",
+                ),
+                rx.foreach(
+                    CatalogState.brands,
+                    lambda brand: rx.button(
+                        brand,
+                        on_click=CatalogState.set_selected_brand(brand),
+                        variant=rx.cond(CatalogState.selected_brand == brand, "solid", "soft"),
+                        color_scheme="purple",
+                        size="1",
+                    ),
+                ),
+                wrap="wrap",
+                spacing="2",
+                width="100%",
+            ),
+            width="100%",
+            spacing="1",
+            align="start",
+        ),
+        width="100%",
+        padding="16px",
+        background="linear-gradient(145deg, rgba(20, 17, 30, 0.9), rgba(12, 11, 18, 0.95))",
+        border="1px solid rgba(167, 139, 250, 0.16)",
+        border_radius="16px",
+        spacing="3",
+        align="stretch",
+    )
 
 def product_catalog() -> rx.Component:
     return rx.vstack(
@@ -1405,6 +1651,8 @@ def product_catalog() -> rx.Component:
             },
             aria_label="Pesquisar produtos",
         ),
+        # Painel de Filtros Avançados (Preço e Marca)
+        advanced_filters_panel(),
         # Cabeçalho da seção com o título e categoria selecionada
         rx.hstack(
             rx.heading(
@@ -1455,7 +1703,6 @@ def product_catalog() -> rx.Component:
         spacing="5",
     )
 
-
 def empty_catalog_state() -> rx.Component:
     return rx.box(
         rx.vstack(
@@ -1500,7 +1747,6 @@ def empty_catalog_state() -> rx.Component:
         border_radius="24px",
         box_shadow="0 24px 80px rgba(0, 0, 0, 0.28)",
     )
-
 
 def login_page() -> rx.Component:
     return rx.box(
@@ -1673,7 +1919,6 @@ def login_page() -> rx.Component:
         background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), #0b0b12",
     )
 
-
 def registration_page() -> rx.Component:
     return rx.center(
         rx.vstack(
@@ -1793,9 +2038,9 @@ def registration_page() -> rx.Component:
                         font_weight="600",
                     ),
                     rx.input(
-                        type="date",
                         value=RegistrationState.birth_date,
                         on_change=RegistrationState.set_birth_date,
+                        placeholder="DD/MM/YYYY",
                         aria_label="Data de Nascimento",
                         required=True,
                         width="100%",
@@ -1952,7 +2197,6 @@ def registration_page() -> rx.Component:
         padding="24px",
         background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), #0b0b12",
     )
-
 
 def index() -> rx.Component:
     return rx.box(
@@ -2302,7 +2546,6 @@ def index() -> rx.Component:
         overflow_x="hidden",
         background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
     )
-
 
 def checkout_page() -> rx.Component:
     return rx.box(
@@ -2800,6 +3043,62 @@ def checkout_page() -> rx.Component:
         background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
     )
 
+def address_row(addr: rx.Var[AddressItem]) -> rx.Component:
+    return rx.hstack(
+        rx.vstack(
+            rx.hstack(
+                rx.text(addr["title"], color="#f5f3ff", font_weight="700", font_size="15px"),
+                rx.cond(
+                    addr["is_main"],
+                    rx.badge("Principal", color_scheme="purple", variant="solid", size="1"),
+                    rx.fragment(),
+                ),
+                spacing="2",
+                align="center",
+            ),
+            rx.text(
+                rx.cond(
+                    addr["complement"] != "",
+                    addr["street"] + ", " + addr["number"] + " - " + addr["complement"] + ", " + addr["neighborhood"] + " - " + addr["city"] + " - " + addr["state"],
+                    addr["street"] + ", " + addr["number"] + ", " + addr["neighborhood"] + " - " + addr["city"] + " - " + addr["state"]
+                ),
+                color="#a1a1aa",
+                font_size="13px",
+            ),
+            rx.text("CEP: " + addr["cep"], color="#a1a1aa", font_size="12px"),
+            spacing="1",
+            align="start",
+        ),
+        rx.hstack(
+            rx.cond(
+                ~addr["is_main"],
+                rx.button(
+                    "Tornar Principal",
+                    on_click=AuthState.set_main_address(addr["id"]),
+                    size="1",
+                    variant="soft",
+                    color_scheme="purple",
+                ),
+                rx.fragment(),
+            ),
+            rx.button(
+                "Remover",
+                on_click=AuthState.delete_address(addr["id"]),
+                size="1",
+                variant="soft",
+                color_scheme="red",
+            ),
+            spacing="2",
+            align="center",
+        ),
+        width="100%",
+        justify="between",
+        align="center",
+        padding="16px",
+        background="#11111a",
+        border="1px solid rgba(167, 139, 250, 0.2)",
+        border_radius="12px",
+    )
 
 def profile_page() -> rx.Component:
     return rx.box(
@@ -2907,7 +3206,7 @@ def profile_page() -> rx.Component:
                                     rx.text("Nome do Usuário", color="#e4e4e7", font_size="13px", font_weight="600"),
                                     rx.input(
                                         value=AuthState.user_name,
-                                        on_change=AuthState.update_profile,
+                                        on_change=AuthState.set_user_name,
                                         width="100%",
                                         height="42px",
                                         background="#11111a",
@@ -2939,9 +3238,9 @@ def profile_page() -> rx.Component:
                                 rx.vstack(
                                     rx.text("Data de Nascimento", color="#e4e4e7", font_size="13px", font_weight="600"),
                                     rx.input(
-                                        type="date",
                                         value=AuthState.user_birth_date,
                                         on_change=AuthState.set_user_birth_date,
+                                        placeholder="DD/MM/YYYY",
                                         width="100%",
                                         height="42px",
                                         background="#11111a",
@@ -3040,34 +3339,203 @@ def profile_page() -> rx.Component:
                                         width="100%",
                                         spacing="4",
                                     ),
-                                    # Endereços
-                                    rx.vstack(
-                                        rx.heading("Endereços Cadastrados", size="6", color="#f5f3ff"),
-                                        rx.text("Endereços salvos para entregas rápidas.", color="#a1a1aa", font_size="14px"),
-                                        rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                                    rx.cond(
+                                        AuthState.profile_tab == "enderecos",
                                         rx.vstack(
                                             rx.hstack(
                                                 rx.vstack(
-                                                    rx.text("Endereço Principal", color="#f5f3ff", font_weight="700", font_size="15px"),
-                                                    rx.text("Praça da Sé, 100 - Sé, São Paulo - SP", color="#a1a1aa", font_size="13px"),
-                                                    rx.text("CEP: 01001-000", color="#a1a1aa", font_size="12px"),
+                                                    rx.heading("Endereços Cadastrados", size="6", color="#f5f3ff"),
+                                                    rx.text("Gerencie seus endereços para entregas rápidas.", color="#a1a1aa", font_size="14px"),
                                                     spacing="1",
                                                     align="start",
                                                 ),
-                                                rx.badge("Principal", color_scheme="purple", variant="solid", size="1"),
+                                                rx.button(
+                                                    rx.cond(AuthState.is_adding_address, "Cancelar", "+ Novo Endereço"),
+                                                    on_click=AuthState.toggle_add_address_form,
+                                                    color_scheme="purple",
+                                                    size="2",
+                                                    variant="soft",
+                                                ),
                                                 width="100%",
                                                 justify="between",
                                                 align="center",
-                                                padding="16px",
-                                                background="#11111a",
-                                                border="1px solid rgba(167, 139, 250, 0.2)",
-                                                border_radius="12px",
+                                            ),
+                                            rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                                            rx.cond(
+                                                AuthState.address_message != "",
+                                                rx.text(AuthState.address_message, color="#4ade80", font_size="13px"),
+                                                rx.fragment(),
+                                            ),
+                                            rx.cond(
+                                                AuthState.is_adding_address,
+                                                rx.vstack(
+                                                    rx.heading("Cadastrar Novo Endereço", size="4", color="#f5f3ff"),
+                                                    rx.grid(
+                                                        rx.vstack(
+                                                            rx.text("Título (ex: Casa, Trabalho)", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=AuthState.new_address_title,
+                                                                on_change=AuthState.set_new_address_title,
+                                                                placeholder="Casa",
+                                                                width="100%",
+                                                                height="40px",
+                                                                background="#11111a",
+                                                                border="1px solid rgba(167, 139, 250, 0.24)",
+                                                                border_radius="8px",
+                                                                color="#f5f3ff",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        rx.vstack(
+                                                            rx.text("CEP", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=AuthState.new_address_cep,
+                                                                on_change=AuthState.set_new_address_cep,
+                                                                placeholder="00000-000",
+                                                                width="100%",
+                                                                height="40px",
+                                                                background="#11111a",
+                                                                border="1px solid rgba(167, 139, 250, 0.24)",
+                                                                border_radius="8px",
+                                                                color="#f5f3ff",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        columns="2",
+                                                        spacing="3",
+                                                        width="100%",
+                                                    ),
+                                                    rx.grid(
+                                                        rx.vstack(
+                                                            rx.text("Logradouro", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=AuthState.new_address_street,
+                                                                on_change=AuthState.set_new_address_street,
+                                                                placeholder="Rua, Avenida...",
+                                                                width="100%",
+                                                                height="40px",
+                                                                background="#11111a",
+                                                                border="1px solid rgba(167, 139, 250, 0.24)",
+                                                                border_radius="8px",
+                                                                color="#f5f3ff",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        rx.vstack(
+                                                            rx.text("Número", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=AuthState.new_address_number,
+                                                                on_change=AuthState.set_new_address_number,
+                                                                placeholder="123",
+                                                                width="100%",
+                                                                height="40px",
+                                                                background="#11111a",
+                                                                border="1px solid rgba(167, 139, 250, 0.24)",
+                                                                border_radius="8px",
+                                                                color="#f5f3ff",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        columns="2",
+                                                        spacing="3",
+                                                        width="100%",
+                                                    ),
+                                                    rx.grid(
+                                                        rx.vstack(
+                                                            rx.text("Complemento", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=AuthState.new_address_complement,
+                                                                on_change=AuthState.set_new_address_complement,
+                                                                placeholder="Apto 42, Bloco B",
+                                                                width="100%",
+                                                                height="40px",
+                                                                background="#11111a",
+                                                                border="1px solid rgba(167, 139, 250, 0.24)",
+                                                                border_radius="8px",
+                                                                color="#f5f3ff",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        rx.vstack(
+                                                            rx.text("Bairro", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=AuthState.new_address_neighborhood,
+                                                                on_change=AuthState.set_new_address_neighborhood,
+                                                                placeholder="Centro",
+                                                                width="100%",
+                                                                height="40px",
+                                                                background="#11111a",
+                                                                border="1px solid rgba(167, 139, 250, 0.24)",
+                                                                border_radius="8px",
+                                                                color="#f5f3ff",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        columns="2",
+                                                        spacing="3",
+                                                        width="100%",
+                                                    ),
+                                                    rx.grid(
+                                                        rx.vstack(
+                                                            rx.text("Cidade", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=AuthState.new_address_city,
+                                                                on_change=AuthState.set_new_address_city,
+                                                                placeholder="São Paulo",
+                                                                width="100%",
+                                                                height="40px",
+                                                                background="#11111a",
+                                                                border="1px solid rgba(167, 139, 250, 0.24)",
+                                                                border_radius="8px",
+                                                                color="#f5f3ff",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        rx.vstack(
+                                                            rx.text("Estado (UF)", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=AuthState.new_address_state,
+                                                                on_change=AuthState.set_new_address_state,
+                                                                placeholder="SP",
+                                                                width="100%",
+                                                                height="40px",
+                                                                background="#11111a",
+                                                                border="1px solid rgba(167, 139, 250, 0.24)",
+                                                                border_radius="8px",
+                                                                color="#f5f3ff",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        columns="2",
+                                                        spacing="3",
+                                                        width="100%",
+                                                    ),
+                                                    rx.button(
+                                                        "Salvar Endereço",
+                                                        on_click=AuthState.add_address,
+                                                        color_scheme="purple",
+                                                        size="2",
+                                                        width="100%",
+                                                        margin_top="8px",
+                                                    ),
+                                                    width="100%",
+                                                    padding="20px",
+                                                    background="#161522",
+                                                    border="1px solid rgba(167, 139, 250, 0.3)",
+                                                    border_radius="16px",
+                                                    spacing="4",
+                                                ),
+                                                rx.fragment(),
+                                            ),
+                                            rx.vstack(
+                                                rx.foreach(AuthState.addresses, address_row),
+                                                width="100%",
+                                                spacing="3",
+                                                margin_top="12px",
                                             ),
                                             width="100%",
-                                            spacing="3",
+                                            spacing="4",
                                         ),
-                                        width="100%",
-                                        spacing="4",
                                     ),
                                 ),
                             ),
@@ -3115,7 +3583,6 @@ def profile_page() -> rx.Component:
         overflow_x="hidden",
         background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
     )
-
 
 app = rx.App()
 app.add_page(index, route="/")
