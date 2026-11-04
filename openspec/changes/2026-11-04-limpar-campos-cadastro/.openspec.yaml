@@ -1,0 +1,4 @@
+schema: 1
+name: limpar-campos-cadastro
+description: Limpar os campos do formulário de cadastro após um registro bem-sucedido
+dependencies: []
