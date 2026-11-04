@@ -6,14 +6,16 @@ table USER {
     timestamp created_at?=now {
       visibility = "private"
     }
-  
+
     text name? filters=trim
     email email? filters=trim|lower
+    text cpf? filters=trim
+    text birth_date? filters=trim
     password password? {
       sensitive = true
       visibility = "internal"
     }
-  
+
     int pepel_id? {
       table = "PEPEL"
     }

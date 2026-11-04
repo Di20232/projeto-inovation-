@@ -5,6 +5,8 @@ query "auth/signup" verb=POST {
   input {
     text name?
     text email?
+    text cpf?
+    text birth_date?
     text password?
   }
 
@@ -13,22 +15,24 @@ query "auth/signup" verb=POST {
       field_name = "email"
       field_value = $input.email
     } as $USER
-  
+
     precondition ($USER == null) {
       error_type = "accessdenied"
       error = "This account is already in use."
     }
-  
+
     db.add USER {
       enforce_hidden_fields = false
       data = {
         created_at: "now"
         name      : $input.name
         email     : $input.email
+        cpf       : $input.cpf
+        birth_date: $input.birth_date
         password  : $input.password
       }
     } as $USER
-  
+
     security.create_auth_token {
       table = "USER"
       extras = {}

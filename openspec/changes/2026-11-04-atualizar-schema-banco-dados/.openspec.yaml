@@ -1,0 +1,4 @@
+schema: 1
+name: atualizar-schema-banco-dados
+description: Atualizar schemas das tabelas USER e endereço e o endpoint de signup para persistir CPF e Data de Nascimento
+dependencies: []
