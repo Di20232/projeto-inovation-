@@ -994,7 +994,14 @@ class RegistrationState(rx.State):
                 auth_state.user_name = name
                 auth_state.user_email = email
                 auth_state.user_cpf = format_cpf(cpf)
-                auth_state.user_birth_date = birth_date
+                auth_state.user_birth_date = format_birth_date(birth_date)
+
+                # Limpa os campos do formulário de cadastro
+                self.name = ""
+                self.cpf = ""
+                self.birth_date = ""
+                self.email = ""
+                self.password = ""
             else:
                 self.registration_message = "O Xano não confirmou a criação da conta."
         finally:

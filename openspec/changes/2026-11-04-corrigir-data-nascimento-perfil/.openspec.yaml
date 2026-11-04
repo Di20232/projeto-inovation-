@@ -1,0 +1,4 @@
+schema: 1
+name: corrigir-data-nascimento-perfil
+description: Garantir formatação e propagação correta da data de nascimento do cadastro para o perfil
+dependencies: []
