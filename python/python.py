@@ -985,10 +985,16 @@ class RegistrationState(rx.State):
         else:
             if isinstance(signup_result, dict) and signup_result.get("success") is True:
                 self.registration_message = (
-                    "Conta criada com sucesso. A verificação por e-mail ainda não está "
-                    "disponível; não foi enviado nenhum código."
+                    "Conta criada com sucesso. Bem-vindo ao NightFall!"
                 )
                 self.registration_succeeded = True
+
+                auth_state = await self.get_state(AuthState)
+                auth_state.is_logged_in = True
+                auth_state.user_name = name
+                auth_state.user_email = email
+                auth_state.user_cpf = format_cpf(cpf)
+                auth_state.user_birth_date = birth_date
             else:
                 self.registration_message = "O Xano não confirmou a criação da conta."
         finally:
@@ -3272,6 +3278,17 @@ def profile_page() -> rx.Component:
                                     AuthState.profile_message != "",
                                     rx.text(AuthState.profile_message, color="#4ade80", font_size="13px"),
                                     rx.fragment(),
+                                ),
+                                rx.button(
+                                    "Salvar Alterações",
+                                    on_click=AuthState.save_profile,
+                                    background="linear-gradient(145deg, #a78bfa, #6d28d9)",
+                                    color="#f5f3ff",
+                                    font_weight="600",
+                                    width="100%",
+                                    height="42px",
+                                    border_radius="10px",
+                                    cursor="pointer",
                                 ),
                                 width="100%",
                                 spacing="4",
