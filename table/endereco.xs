@@ -19,7 +19,7 @@ table "endereço" {
     text neighborhood? filters=trim
     text city? filters=trim
     text state? filters=trim
-    boolean is_main?
+    bool is_main?
   }
 
   index = [

@@ -21,10 +21,6 @@ query "auth/signup" verb=POST {
       error = "This account is already in use."
     }
 
-    security.hash_password {
-      password = $input.password
-    } as $hashed_password
-
     db.add USER {
       enforce_hidden_fields = false
       data = {
@@ -33,7 +29,7 @@ query "auth/signup" verb=POST {
         email     : $input.email
         cpf       : $input.cpf
         birth_date: $input.birth_date
-        password  : $hashed_password
+        password  : $input.password
       }
     } as $USER
 
