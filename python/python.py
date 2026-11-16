@@ -1,5 +1,6 @@
-"""NightFall storefront landing page."""
+"""NightFall storefront landing page and auth flow."""
 
+import asyncio
 import json
 import math
 import os
@@ -11,16 +12,14 @@ from urllib.parse import urlparse
 import httpx
 import reflex as rx
 
-
 CATEGORIES = ("Computadores", "Componentes", "Periféricos", "Acessórios")
 CATALOG_PATH = Path(__file__).with_name("catalog.json")
 DEFAULT_XANO_SIGNUP_URL = "https://x8ki-letl-twmt.n7.xano.io/api:nightfall-auth/signup"
-
+DEFAULT_XANO_PRODUCTS_URL = "https://x8ki-letl-twmt.n7.xano.io/api:nightfall-auth/produto"
 
 class Specification(TypedDict):
     label: str
     value: str
-
 
 class Product(TypedDict):
     name: str
@@ -32,16 +31,30 @@ class Product(TypedDict):
     category: str
     specifications: list[Specification]
 
-
 class Category(TypedDict):
     name: str
     available: bool
 
+class CartItem(TypedDict):
+    name: str
+    image_url: str
+    price: float
+    price_display: str
+    quantity: int
 
-def load_catalog(path: Path = CATALOG_PATH) -> list[Product]:
-    with path.open(encoding="utf-8") as catalog_file:
-        data = json.load(catalog_file)
+class AddressItem(TypedDict):
+    id: str
+    title: str
+    street: str
+    number: str
+    complement: str
+    neighborhood: str
+    city: str
+    state: str
+    cep: str
+    is_main: bool
 
+def parse_catalog_data(data: list[Any]) -> list[Product]:
     if not isinstance(data, list):
         raise ValueError("O catálogo deve ser uma lista JSON de produtos.")
 
@@ -135,10 +148,27 @@ def load_catalog(path: Path = CATALOG_PATH) -> list[Product]:
 
     return products
 
+def load_catalog(path: Path = CATALOG_PATH) -> list[Product]:
+    products_url = os.getenv("XANO_PRODUCTS_URL", DEFAULT_XANO_PRODUCTS_URL).strip()
+    if products_url:
+        try:
+            response = httpx.get(products_url, timeout=5.0)
+            if response.status_code == 200:
+                data = response.json()
+                parsed = parse_catalog_data(data)
+                if parsed:
+                    return parsed
+        except Exception:
+            pass
+
+    with path.open(encoding="utf-8") as catalog_file:
+        data = json.load(catalog_file)
+    return parse_catalog_data(data)
 
 class CatalogState(rx.State):
     products: list[Product] = load_catalog()
     selected_category: str = "Todos"
+    search_query: str = ""
     category_menu_open: bool = False
     product_details_open: bool = False
     selected_product_name: str = ""
@@ -148,15 +178,273 @@ class CatalogState(rx.State):
     selected_product_category: str = ""
     selected_product_specifications: list[Specification] = []
 
+    min_price: str = ""
+    max_price: str = ""
+    selected_brand: str = "Todas"
+
+    cart_items: list[CartItem] = []
+    cart_open: bool = False
+
+    @rx.event
+    def set_cart_open(self, is_open: bool):
+        self.cart_open = is_open
+
+    @rx.event
+    def add_to_cart(self, product_name: str):
+        product = next(
+            (item for item in self.products if item["name"] == product_name),
+            None,
+        )
+        if product is None:
+            return
+
+        existing = next(
+            (item for item in self.cart_items if item["name"] == product_name),
+            None,
+        )
+        if existing:
+            existing["quantity"] += 1
+            self.cart_items = list(self.cart_items)
+        else:
+            self.cart_items = list(self.cart_items) + [{
+                "name": product["name"],
+                "image_url": product["image_url"],
+                "price": product["price"],
+                "price_display": product["price_display"],
+                "quantity": 1,
+            }]
+        self.cart_open = True
+
+    @rx.event
+    def remove_from_cart(self, product_name: str):
+        self.cart_items = [item for item in self.cart_items if item["name"] != product_name]
+
+    @rx.event
+    def update_quantity(self, product_name: str, delta: int):
+        new_items = []
+        for item in self.cart_items:
+            if item["name"] == product_name:
+                q = item["quantity"] + delta
+                if q > 0:
+                    item["quantity"] = q
+                    new_items.append(item)
+            else:
+                new_items.append(item)
+        self.cart_items = new_items
+
+    @rx.event
+    def clear_cart(self):
+        self.cart_items = []
+
+    @rx.var
+    def cart_count(self) -> int:
+        return sum(item["quantity"] for item in self.cart_items)
+
+    @rx.var
+    def cart_total(self) -> float:
+        return sum(item["price"] * item["quantity"] for item in self.cart_items)
+
+    @rx.var
+    def cart_total_display(self) -> str:
+        total = self.cart_total
+        formatted = f"{Decimal(str(total)):,.2f}"
+        formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"R$ {formatted}"
+
+    coupon_code: str = ""
+    discount_amount: float = 0.0
+    coupon_message: str = ""
+    coupon_applied: bool = False
+
+    @rx.event
+    def set_coupon_code(self, code: str):
+        self.coupon_code = code
+
+    @rx.event
+    def apply_coupon(self):
+        code = self.coupon_code.strip().upper()
+        if code == "NIGHTFALL10":
+            subtotal = sum(item["price"] * item["quantity"] for item in self.cart_items)
+            self.discount_amount = subtotal * 0.10
+            self.coupon_applied = True
+            self.coupon_message = "Cupom NIGHTFALL10 aplicado (10% OFF)!"
+        else:
+            self.discount_amount = 0.0
+            self.coupon_applied = False
+            self.coupon_message = "Cupom inválido."
+
+    @rx.event
+    def remove_coupon(self):
+        self.coupon_code = ""
+        self.discount_amount = 0.0
+        self.coupon_applied = False
+        self.coupon_message = ""
+
+    @rx.var
+    def cart_discount_display(self) -> str:
+        formatted = f"{Decimal(str(self.discount_amount)):,.2f}"
+        formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"- R$ {formatted}"
+
+    @rx.var
+    def shipping_cost(self) -> float:
+        subtotal = sum(item["price"] * item["quantity"] for item in self.cart_items)
+        if subtotal >= 250.0 or subtotal == 0:
+            return 0.0
+        return 15.0
+
+    @rx.var
+    def shipping_display(self) -> str:
+        cost = self.shipping_cost
+        if cost == 0.0:
+            return "Grátis"
+        formatted = f"{Decimal(str(cost)):,.2f}"
+        formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"R$ {formatted}"
+
+    @rx.var
+    def cart_final_total(self) -> float:
+        subtotal = sum(item["price"] * item["quantity"] for item in self.cart_items)
+        return max(0.0, subtotal - self.discount_amount + self.shipping_cost)
+
+    @rx.var
+    def cart_final_total_display(self) -> str:
+        total = self.cart_final_total
+        formatted = f"{Decimal(str(total)):,.2f}"
+        formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"R$ {formatted}"
+
+    @rx.event
+    def set_min_price(self, value: str):
+        self.min_price = value
+
+    @rx.event
+    def set_max_price(self, value: str):
+        self.max_price = value
+
+    @rx.event
+    def set_selected_brand(self, value: str):
+        self.selected_brand = value
+
+    shipping_cep: str = ""
+    shipping_address: str = ""
+    shipping_number: str = ""
+    shipping_complement: str = ""
+    shipping_neighborhood: str = ""
+    shipping_city: str = ""
+    shipping_state: str = ""
+    payment_method: str = "credit_card"
+    card_number: str = ""
+    card_name: str = ""
+    card_expiry: str = ""
+    card_cvv: str = ""
+    order_success: bool = False
+    order_id: str = ""
+
+    @rx.event
+    async def proceed_to_checkout(self):
+        auth_state = await self.get_state(AuthState)
+        if not auth_state.is_logged_in:
+            auth_state.redirect_after_login = "/pagamento"
+            return rx.redirect("/login")
+        return rx.redirect("/pagamento")
+
+    @rx.event
+    async def set_shipping_cep(self, val: str):
+        digits = "".join(filter(str.isdigit, val))[:8]
+        if len(digits) <= 5:
+            self.shipping_cep = digits
+        else:
+            self.shipping_cep = f"{digits[:5]}-{digits[5:]}"
+
+        if len(digits) == 8:
+            try:
+                url = f"https://viacep.com.br/ws/{digits}/json/"
+                response = httpx.get(url, timeout=3.0)
+                if response.status_code == 200:
+                    data = response.json()
+                    if not data.get("erro"):
+                        self.shipping_address = data.get("logradouro", "")
+                        self.shipping_neighborhood = data.get("bairro", "")
+                        self.shipping_city = data.get("localidade", "")
+                        self.shipping_state = data.get("uf", "")
+            except Exception:
+                pass
+
+    @rx.event
+    def set_shipping_address(self, val: str):
+        self.shipping_address = val
+
+    @rx.event
+    def set_shipping_number(self, val: str):
+        self.shipping_number = "".join(filter(str.isdigit, val))
+
+    @rx.event
+    def set_shipping_complement(self, val: str):
+        self.shipping_complement = val
+
+    @rx.event
+    def set_shipping_neighborhood(self, val: str):
+        self.shipping_neighborhood = val
+
+    @rx.event
+    def set_shipping_city(self, val: str):
+        self.shipping_city = val
+
+    @rx.event
+    def set_shipping_state(self, val: str):
+        self.shipping_state = val
+
+    @rx.event
+    def set_payment_method(self, val: str):
+        self.payment_method = val
+
+    @rx.event
+    def set_card_number(self, val: str):
+        self.card_number = val
+
+    @rx.event
+    def set_card_name(self, val: str):
+        self.card_name = val
+
+    @rx.event
+    def set_card_expiry(self, val: str):
+        self.card_expiry = val
+
+    @rx.event
+    def set_card_cvv(self, val: str):
+        self.card_cvv = val
+
+    @rx.event
+    def finalize_order(self):
+        import random
+        self.order_id = f"#NF-{random.randint(10000, 99999)}"
+        self.order_success = True
+        self.cart_items = []
+
+    @rx.event
+    def clear_filters(self):
+        self.selected_category = "Todos"
+        self.search_query = ""
+        self.min_price = ""
+        self.max_price = ""
+        self.selected_brand = "Todas"
+        self.category_menu_open = False
+
+    @rx.event
+    def show_all_products(self):
+        self.selected_category = "Todos"
+        self.search_query = ""
+        self.category_menu_open = False
+
     @rx.event
     def select_category(self, category: str):
         self.selected_category = category
         self.category_menu_open = False
 
     @rx.event
-    def show_all_products(self):
-        self.selected_category = "Todos"
-        self.category_menu_open = False
+    def set_search_query(self, query: str):
+        self.search_query = query
 
     @rx.event
     def set_category_menu_open(self, is_open: bool):
@@ -192,13 +480,49 @@ class CatalogState(rx.State):
 
     @rx.var
     def filtered_products(self) -> list[Product]:
-        if self.selected_category == "Todos":
-            return self.products
-        return [
-            product
-            for product in self.products
-            if product["category"] == self.selected_category
-        ]
+        prods = self.products
+        if self.selected_category != "Todos":
+            prods = [p for p in prods if p["category"] == self.selected_category]
+
+        # Filtro por faixa de preço
+        min_price = self.min_price.strip()
+        max_price = self.max_price.strip()
+        if min_price or max_price:
+            try:
+                min_val = float(min_price) if min_price else 0
+                max_val = float(max_price) if max_price else float("inf")
+                prods = [
+                    p for p in prods
+                    if min_val <= p["price"] <= max_val
+                ]
+            except ValueError:
+                pass
+
+        # Filtro por marca/especificações
+        selected_brand = self.selected_brand.strip()
+        if selected_brand and selected_brand != "Todas":
+            prods = [
+                p for p in prods
+                if any(spec["value"].lower() == selected_brand.lower()
+                       for spec in p["specifications"])
+            ]
+
+        q = self.search_query.strip().lower()
+        if not q:
+            return prods
+
+        filtered = []
+        for product in prods:
+            searchable_text = " ".join(
+                [product["name"], product["description"], product["category"]]
+                + [
+                    f"{specification['label']} {specification['value']}"
+                    for specification in product["specifications"]
+                ]
+            ).lower()
+            if q in searchable_text:
+                filtered.append(product)
+        return filtered
 
     @rx.var
     def categories(self) -> list[Category]:
@@ -212,13 +536,348 @@ class CatalogState(rx.State):
             for category in CATEGORIES
         ]
 
+    @rx.var
+    def brands(self) -> list[str]:
+        seen: set[str] = set()
+        brands: list[str] = []
+        for product in self.products:
+            for specification in product["specifications"]:
+                if specification["label"].lower() == "marca":
+                    brand = specification["value"].strip()
+                    if brand and brand not in seen:
+                        seen.add(brand)
+                        brands.append(brand)
+        return sorted(brands)
+
+class AuthState(rx.State):
+    is_logged_in: bool = False
+    user_name: str = ""
+    user_email: str = ""
+    user_phone: str = "(11) 98888-7777"
+    user_cpf: str = "123.456.789-09"
+    user_birth_date: str = "15/05/1995"
+    profile_message: str = ""
+    profile_tab: str = "dados"
+    redirect_after_login: str = ""
+    logout_dialog_open: bool = False
+
+    addresses: list[AddressItem] = [
+        {
+            "id": "1",
+            "title": "Endereço Principal",
+            "street": "Praça da Sé",
+            "number": "100",
+            "complement": "Sé",
+            "neighborhood": "Sé",
+            "city": "São Paulo",
+            "state": "SP",
+            "cep": "01001-000",
+            "is_main": True,
+        }
+    ]
+    is_adding_address: bool = False
+    new_address_title: str = "Casa"
+    new_address_cep: str = ""
+    new_address_street: str = ""
+    new_address_number: str = ""
+    new_address_complement: str = ""
+    new_address_neighborhood: str = ""
+    new_address_city: str = ""
+    new_address_state: str = ""
+    address_message: str = ""
+
+    @rx.event
+    def toggle_add_address_form(self):
+        self.is_adding_address = not self.is_adding_address
+        self.address_message = ""
+
+    @rx.event
+    def set_new_address_title(self, val: str):
+        self.new_address_title = val
+
+    @rx.event
+    def set_new_address_cep(self, val: str):
+        digits = "".join(filter(str.isdigit, val))[:8]
+        if len(digits) <= 5:
+            self.new_address_cep = digits
+        else:
+            self.new_address_cep = f"{digits[:5]}-{digits[5:]}"
+
+        if len(digits) == 8:
+            try:
+                url = f"https://viacep.com.br/ws/{digits}/json/"
+                response = httpx.get(url, timeout=3.0)
+                if response.status_code == 200:
+                    data = response.json()
+                    if not data.get("erro"):
+                        self.new_address_street = data.get("logradouro", "")
+                        self.new_address_neighborhood = data.get("bairro", "")
+                        self.new_address_city = data.get("localidade", "")
+                        self.new_address_state = data.get("uf", "")
+            except Exception:
+                pass
+
+    @rx.event
+    def set_new_address_street(self, val: str):
+        self.new_address_street = val
+
+    @rx.event
+    def set_new_address_number(self, val: str):
+        self.new_address_number = "".join(filter(str.isdigit, val))
+
+    @rx.event
+    def set_new_address_complement(self, val: str):
+        self.new_address_complement = val
+
+    @rx.event
+    def set_new_address_neighborhood(self, val: str):
+        self.new_address_neighborhood = val
+
+    @rx.event
+    def set_new_address_city(self, val: str):
+        self.new_address_city = val
+
+    @rx.event
+    def set_new_address_state(self, val: str):
+        self.new_address_state = val
+
+    @rx.event
+    def add_address(self):
+        title = self.new_address_title.strip() or "Endereço"
+        cep = self.new_address_cep.strip()
+        street = self.new_address_street.strip()
+        number = self.new_address_number.strip()
+        city = self.new_address_city.strip()
+        state = self.new_address_state.strip()
+
+        if not cep or not street or not number or not city or not state:
+            self.address_message = "Preencha CEP, logradouro, número, cidade e estado."
+            return
+
+        new_id = str(len(self.addresses) + 1)
+        is_first = len(self.addresses) == 0
+
+        if is_first or not any(a.get("is_main") for a in self.addresses):
+            for a in self.addresses:
+                a["is_main"] = False
+            is_main = True
+        else:
+            is_main = False
+
+        new_addr: AddressItem = {
+            "id": new_id,
+            "title": title,
+            "street": street,
+            "number": number,
+            "complement": self.new_address_complement.strip(),
+            "neighborhood": self.new_address_neighborhood.strip(),
+            "city": city,
+            "state": state,
+            "cep": cep,
+            "is_main": is_main,
+        }
+        self.addresses.append(new_addr)
+        self.is_adding_address = False
+        self.address_message = "Endereço cadastrado com sucesso!"
+        self.new_address_title = "Casa"
+        self.new_address_cep = ""
+        self.new_address_street = ""
+        self.new_address_number = ""
+        self.new_address_complement = ""
+        self.new_address_neighborhood = ""
+        self.new_address_city = ""
+        self.new_address_state = ""
+
+    @rx.event
+    def set_main_address(self, address_id: str):
+        for a in self.addresses:
+            a["is_main"] = (a["id"] == address_id)
+        self.address_message = "Endereço principal atualizado!"
+
+    @rx.event
+    def delete_address(self, address_id: str):
+        self.addresses = [a for a in self.addresses if a["id"] != address_id]
+        if self.addresses and not any(a.get("is_main") for a in self.addresses):
+            self.addresses[0]["is_main"] = True
+        self.address_message = "Endereço removido com sucesso!"
+
+    @rx.event
+    def set_profile_tab(self, tab: str):
+        self.profile_tab = tab
+
+    @rx.event
+    def set_user_phone(self, phone: str):
+        self.user_phone = phone
+        self.profile_message = ""
+
+    @rx.event
+    def set_user_cpf(self, value: str):
+        self.user_cpf = format_cpf(value)
+        self.profile_message = ""
+
+    @rx.event
+    def set_user_birth_date(self, value: str):
+        self.user_birth_date = format_birth_date(value)
+        self.profile_message = ""
+
+    @rx.event
+    def set_user_name(self, name: str):
+        self.user_name = name
+        self.profile_message = ""
+
+    @rx.event
+    def save_profile(self):
+        if self.user_name.strip():
+            self.profile_message = "Dados cadastrais atualizados com sucesso!"
+        else:
+            self.profile_message = "Informe um nome válido."
+
+    @rx.event
+    def set_logout_dialog_open(self, is_open: bool):
+        self.logout_dialog_open = is_open
+
+    @rx.event
+    def confirm_logout(self):
+        self.is_logged_in = False
+        self.user_name = ""
+        self.user_email = ""
+        self.logout_dialog_open = False
+        return rx.redirect("/")
+
+class LoginState(rx.State):
+    email: str = ""
+    password: str = ""
+    login_message: str = ""
+    login_succeeded: bool = False
+    is_submitting: bool = False
+
+    @rx.event
+    def set_email(self, value: str):
+        self.email = value
+        self.login_message = ""
+        self.login_succeeded = False
+
+    @rx.event
+    def set_password(self, value: str):
+        self.password = value
+        self.login_message = ""
+        self.login_succeeded = False
+
+    @rx.event
+    async def login(self):
+        email = self.email.strip().lower()
+        password = self.password
+
+        if not email or not password:
+            self.login_message = "Informe e-mail e senha."
+            self.login_succeeded = False
+            return
+
+        self.login_message = ""
+        self.login_succeeded = False
+        self.is_submitting = True
+        try:
+            await asyncio.sleep(0.8)
+            if "@" in email and len(password) >= 6:
+                self.login_message = "Login realizado com sucesso!"
+                self.login_succeeded = True
+
+                # Atualiza o estado de autenticação global e redireciona
+                auth_state = await self.get_state(AuthState)
+                auth_state.is_logged_in = True
+                auth_state.user_email = email
+                name_part = email.split("@")[0]
+                auth_state.user_name = name_part.capitalize()
+                if not auth_state.user_cpf:
+                    auth_state.user_cpf = "123.456.789-09"
+                if not auth_state.user_birth_date:
+                    auth_state.user_birth_date = "15/05/1995"
+
+                target = auth_state.redirect_after_login if auth_state.redirect_after_login else "/"
+                auth_state.redirect_after_login = ""
+
+                # Limpa os campos de login para que da próxima vez venham limpos
+                self.email = ""
+                self.password = ""
+
+                return rx.redirect(target)
+            else:
+                self.login_message = "Credenciais inválidas. Verifique seu e-mail e senha."
+        except Exception:
+            self.login_message = "Erro ao conectar com o serviço de autenticação."
+        finally:
+            self.is_submitting = False
+
+def validate_cpf(cpf: str) -> bool:
+    digits = "".join(filter(str.isdigit, cpf))
+    if len(digits) != 11:
+        return False
+    if digits == digits[0] * 11:
+        return False
+
+    s = sum(int(digits[i]) * (10 - i) for i in range(9))
+    digit1 = (s * 10) % 11
+    if digit1 == 10:
+        digit1 = 0
+    if digit1 != int(digits[9]):
+        return False
+
+    s = sum(int(digits[i]) * (11 - i) for i in range(10))
+    digit2 = (s * 10) % 11
+    if digit2 == 10:
+        digit2 = 0
+    if digit2 != int(digits[10]):
+        return False
+
+    return True
+
+def format_cpf(value: str) -> str:
+    digits = "".join(filter(str.isdigit, value))[:11]
+    if len(digits) <= 3:
+        return digits
+    elif len(digits) <= 6:
+        return f"{digits[:3]}.{digits[3:]}"
+    elif len(digits) <= 9:
+        return f"{digits[:3]}.{digits[3:6]}.{digits[6:]}"
+    else:
+        return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:]}"
+
+def format_birth_date(value: str) -> str:
+    digits = "".join(filter(str.isdigit, value))[:8]
+    if len(digits) <= 2:
+        return digits
+    elif len(digits) <= 4:
+        return f"{digits[:2]}/{digits[2:]}"
+    else:
+        return f"{digits[:2]}/{digits[2:4]}/{digits[4:]}"
 
 class RegistrationState(rx.State):
+    name: str = ""
+    cpf: str = ""
+    birth_date: str = ""
     email: str = ""
     password: str = ""
     registration_message: str = ""
     registration_succeeded: bool = False
     is_submitting: bool = False
+
+    @rx.event
+    def set_name(self, value: str):
+        self.name = value
+        self.registration_message = ""
+        self.registration_succeeded = False
+
+    @rx.event
+    def set_cpf(self, value: str):
+        self.cpf = format_cpf(value)
+        self.registration_message = ""
+        self.registration_succeeded = False
+
+    @rx.event
+    def set_birth_date(self, value: str):
+        self.birth_date = format_birth_date(value)
+        self.registration_message = ""
+        self.registration_succeeded = False
 
     @rx.event
     def set_email(self, value: str):
@@ -234,8 +893,31 @@ class RegistrationState(rx.State):
 
     @rx.event
     async def register(self):
+        name = self.name.strip()
+        cpf = "".join(filter(str.isdigit, self.cpf))
+        birth_date = self.birth_date.strip()
         email = self.email.strip().lower()
         password = self.password
+
+        if not name:
+            self.registration_message = "Informe seu nome completo."
+            self.registration_succeeded = False
+            return
+
+        if not cpf:
+            self.registration_message = "Informe seu CPF."
+            self.registration_succeeded = False
+            return
+
+        if not validate_cpf(cpf):
+            self.registration_message = "CPF inválido. Verifique o número informado."
+            self.registration_succeeded = False
+            return
+
+        if not birth_date:
+            self.registration_message = "Informe sua data de nascimento."
+            self.registration_succeeded = False
+            return
 
         if not email:
             self.registration_message = "Informe um e-mail válido."
@@ -272,7 +954,13 @@ class RegistrationState(rx.State):
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
                 response = await client.post(
                     signup_url,
-                    json={"email": email, "password": password},
+                    json={
+                        "name": name,
+                        "cpf": cpf,
+                        "birth_date": birth_date,
+                        "email": email,
+                        "password": password,
+                    },
                 )
                 response.raise_for_status()
                 signup_result = response.json()
@@ -281,7 +969,7 @@ class RegistrationState(rx.State):
                 self.registration_message = "Este e-mail já está cadastrado."
             elif error.response.status_code in {400, 422}:
                 self.registration_message = (
-                    "E-mail ou senha inválidos. A senha precisa ter pelo menos 8 caracteres."
+                    "Dados inválidos. Verifique as informações preenchidas."
                 )
             else:
                 self.registration_message = (
@@ -296,84 +984,95 @@ class RegistrationState(rx.State):
             self.registration_message = "O Xano retornou uma resposta inválida."
         else:
             if isinstance(signup_result, dict) and signup_result.get("success") is True:
-                self.email = email
-                self.registration_message = "Conta criada com sucesso."
+                self.registration_message = (
+                    "Conta criada com sucesso. Bem-vindo ao NightFall!"
+                )
                 self.registration_succeeded = True
+
+                auth_state = await self.get_state(AuthState)
+                auth_state.is_logged_in = True
+                auth_state.user_name = name
+                auth_state.user_email = email
+                auth_state.user_cpf = format_cpf(cpf)
+                auth_state.user_birth_date = format_birth_date(birth_date)
+
+                # Limpa os campos do formulário de cadastro
+                self.name = ""
+                self.cpf = ""
+                self.birth_date = ""
+                self.email = ""
+                self.password = ""
             else:
                 self.registration_message = "O Xano não confirmou a criação da conta."
         finally:
             self.password = ""
             self.is_submitting = False
 
-
-def category_item(category: rx.Var[Category]) -> rx.Component:
+def category_item(category: rx.Var[Any]) -> rx.Component:
     return rx.cond(
         category["available"],
-        rx.dialog.close(
-            rx.button(
-                category["name"],
-                on_click=CatalogState.select_category(category["name"]),
-                variant="ghost",
-                color=rx.cond(
-                    CatalogState.selected_category == category["name"],
-                    "#f5f3ff",
-                    "#d4d4d8",
-                ),
-                background=rx.cond(
-                    CatalogState.selected_category == category["name"],
-                    "rgba(139, 92, 246, 0.18)",
-                    "transparent",
-                ),
-                border_left=rx.cond(
-                    CatalogState.selected_category == category["name"],
-                    "3px solid #a78bfa",
-                    "3px solid transparent",
-                ),
-                aria_pressed=CatalogState.selected_category == category["name"],
-                width="100%",
-                min_height="52px",
-                padding="12px 16px",
-                justify="start",
-                text_align="left",
-                white_space="normal",
-                line_height="1.4",
-                border_radius="12px",
-                font_size="15px",
-                font_weight=rx.cond(
-                    CatalogState.selected_category == category["name"],
-                    "600",
-                    "500",
-                ),
-                transition="background-color 160ms ease, color 160ms ease",
-                _hover={
-                    "background": "rgba(139, 92, 246, 0.12)",
-                    "color": "#f5f3ff",
-                },
-                _focus_visible={
-                    "outline": "2px solid #c4b5fd",
-                    "outline_offset": "2px",
-                },
+        rx.button(
+            category["name"],
+            on_click=CatalogState.select_category(category["name"]),
+            variant="ghost",
+            color=rx.cond(
+                CatalogState.selected_category == category["name"],
+                "#f5f3ff",
+                "#d4d4d8",
             ),
+            background=rx.cond(
+                CatalogState.selected_category == category["name"],
+                "rgba(139, 92, 246, 0.18)",
+                "transparent",
+            ),
+            border_left=rx.cond(
+                CatalogState.selected_category == category["name"],
+                "3px solid #a78bfa",
+                "3px solid transparent",
+            ),
+            aria_pressed=CatalogState.selected_category == category["name"],
+            width="100%",
+            min_height="48px",
+            padding="10px 14px",
+            justify="start",
+            text_align="left",
+            white_space="normal",
+            line_height="1.4",
+            border_radius="10px",
+            font_size="14px",
+            font_weight=rx.cond(
+                CatalogState.selected_category == category["name"],
+                "600",
+                "500",
+            ),
+            transition="background-color 160ms ease, color 160ms ease",
+            _hover={
+                "background": "rgba(139, 92, 246, 0.12)",
+                "color": "#f5f3ff",
+            },
+            _focus_visible={
+                "outline": "2px solid #c4b5fd",
+                "outline_offset": "2px",
+            },
         ),
         rx.hstack(
             rx.text(
                 category["name"],
                 color="#a1a1aa",
-                font_size="15px",
+                font_size="14px",
                 font_weight="500",
                 line_height="1.4",
             ),
             rx.badge("Em breve", color_scheme="purple", variant="soft"),
             width="100%",
-            min_height="52px",
+            min_height="48px",
             justify="between",
             align="center",
-            padding="12px 16px",
-            border_radius="12px",
+            padding="10px 14px",
+            border_radius="10px",
             background="rgba(255, 255, 255, 0.025)",
         ),
     )
-
 
 def product_card(product: rx.Var[Product]) -> rx.Component:
     return rx.button(
@@ -402,6 +1101,7 @@ def product_card(product: rx.Var[Product]) -> rx.Component:
                 font_size="14px",
                 line_height="1.6",
             ),
+            rx.spacer(),
             rx.text(
                 product["price_display"],
                 color="#e9d5ff",
@@ -411,11 +1111,15 @@ def product_card(product: rx.Var[Product]) -> rx.Component:
             width="100%",
             align="start",
             spacing="3",
+            flex="1",
         ),
         on_click=CatalogState.open_product_details(product["name"]),
         aria_label=f"Ver detalhes de {product['name']}",
         variant="ghost",
-        width="100%",
+        width="340px",
+        flex="1 1 340px",
+        max_width="420px",
+        min_height="460px",
         height="100%",
         padding="18px",
         color="#f5f3ff",
@@ -427,12 +1131,14 @@ def product_card(product: rx.Var[Product]) -> rx.Component:
         border="1px solid rgba(167, 139, 250, 0.16)",
         border_radius="24px",
         box_shadow="0 24px 80px rgba(0, 0, 0, 0.2)",
+        transition="all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
         _hover={
-            "border_color": "rgba(196, 181, 253, 0.5)",
-            "box_shadow": "0 24px 80px rgba(0, 0, 0, 0.3)",
+            "border": "1px solid rgba(196, 181, 253, 0.65)",
+            "background": "linear-gradient(145deg, rgba(30, 24, 48, 0.95), rgba(20, 18, 30, 0.98))",
+            "box_shadow": "0 28px 90px rgba(124, 58, 237, 0.35), 0 0 20px rgba(196, 181, 253, 0.2)",
+            "transform": "translateY(-4px)",
         },
     )
-
 
 def specification_row(specification: rx.Var[Specification]) -> rx.Component:
     return rx.hstack(
@@ -460,7 +1166,6 @@ def specification_row(specification: rx.Var[Specification]) -> rx.Component:
         padding_y="12px",
         border_bottom="1px solid rgba(167, 139, 250, 0.12)",
     )
-
 
 def product_details_dialog() -> rx.Component:
     return rx.dialog.root(
@@ -542,6 +1247,15 @@ def product_details_dialog() -> rx.Component:
                         line_height="1.6",
                     ),
                 ),
+                rx.button(
+                    "Adicionar ao carrinho",
+                    on_click=CatalogState.add_to_cart(CatalogState.selected_product_name),
+                    color_scheme="purple",
+                    size="3",
+                    width="100%",
+                    font_weight="700",
+                    margin_top="8px",
+                ),
                 width="100%",
                 align="start",
                 spacing="4",
@@ -573,31 +1287,424 @@ def product_details_dialog() -> rx.Component:
         on_open_change=CatalogState.set_product_details_open,
     )
 
+def cart_item_row(item: rx.Var[CartItem]) -> rx.Component:
+    return rx.hstack(
+        rx.image(
+            src=item["image_url"],
+            alt=item["name"],
+            width="60px",
+            height="60px",
+            object_fit="contain",
+            background="#0b0b12",
+            border_radius="10px",
+        ),
+        rx.vstack(
+            rx.text(item["name"], color="#f5f3ff", font_size="14px", font_weight="600"),
+            rx.text(item["price_display"], color="#e9d5ff", font_size="13px", font_weight="700"),
+            rx.hstack(
+                rx.button(
+                    "-",
+                    on_click=CatalogState.update_quantity(item["name"], -1),
+                    size="1",
+                    variant="soft",
+                    color_scheme="purple",
+                ),
+                rx.text(item["quantity"], color="#f5f3ff", font_size="13px", font_weight="600"),
+                rx.button(
+                    "+",
+                    on_click=CatalogState.update_quantity(item["name"], 1),
+                    size="1",
+                    variant="soft",
+                    color_scheme="purple",
+                ),
+                spacing="2",
+                align="center",
+            ),
+            spacing="1",
+            align="start",
+            flex="1",
+        ),
+        rx.button(
+            rx.icon("trash", size=16),
+            on_click=CatalogState.remove_from_cart(item["name"]),
+            variant="ghost",
+            color_scheme="red",
+            size="1",
+            aria_label="Remover item",
+        ),
+        width="100%",
+        align="center",
+        justify="between",
+        padding_y="12px",
+        border_bottom="1px solid rgba(167, 139, 250, 0.12)",
+    )
 
-def product_catalog() -> rx.Component:
+def cart_page() -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            # Header
+            rx.hstack(
+                rx.link(
+                    "← Voltar à loja",
+                    href="/",
+                    color="#c4b5fd",
+                    font_size="14px",
+                    font_weight="600",
+                    text_decoration="none",
+                    _hover={"color": "#f5f3ff"},
+                ),
+                rx.hstack(
+                    rx.box(
+                        rx.text(
+                            "N",
+                            color="#f5f3ff",
+                            font_size="18px",
+                            font_weight="800",
+                            text_align="center",
+                            line_height="40px",
+                        ),
+                        width="40px",
+                        height="40px",
+                        background="linear-gradient(145deg, #a78bfa, #6d28d9)",
+                        border="1px solid rgba(196, 181, 253, 0.35)",
+                        border_radius="12px",
+                        box_shadow="0 8px 28px rgba(139, 92, 246, 0.25)",
+                    ),
+                    rx.heading(
+                        "NightFall",
+                        size="5",
+                        color="#f5f3ff",
+                        letter_spacing="-0.04em",
+                    ),
+                    spacing="3",
+                    align="center",
+                ),
+                width="100%",
+                justify="between",
+                align="center",
+                padding_bottom="24px",
+                border_bottom="1px solid rgba(167, 139, 250, 0.16)",
+            ),
+            # Content
+            rx.vstack(
+                rx.heading(
+                    "Carrinho de Compras",
+                    size="7",
+                    color="#f5f3ff",
+                    letter_spacing="-0.03em",
+                    margin_y="16px",
+                ),
+                rx.cond(
+                    CatalogState.cart_items.length() > 0,
+                    rx.flex(
+                        # Left: Items list
+                        rx.vstack(
+                            rx.foreach(CatalogState.cart_items, cart_item_row),
+                            width="100%",
+                            flex="2",
+                            spacing="3",
+                        ),
+                        # Right: Summary card
+                        rx.vstack(
+                            rx.heading("Resumo do Pedido", size="5", color="#f5f3ff"),
+                            rx.divider(border_color="rgba(167, 139, 250, 0.2)"),
+                            rx.hstack(
+                                rx.text("Subtotal", color="#a1a1aa", font_size="14px"),
+                                rx.text(CatalogState.cart_total_display, color="#f5f3ff", font_size="15px", font_weight="600"),
+                                width="100%",
+                                justify="between",
+                            ),
+                            rx.cond(
+                                CatalogState.coupon_applied,
+                                rx.hstack(
+                                    rx.text("Desconto (NIGHTFALL10)", color="#4ade80", font_size="14px"),
+                                    rx.text(CatalogState.cart_discount_display, color="#4ade80", font_size="15px", font_weight="600"),
+                                    width="100%",
+                                    justify="between",
+                                ),
+                                rx.fragment(),
+                            ),
+                            rx.hstack(
+                                rx.text("Frete", color="#a1a1aa", font_size="14px"),
+                                rx.text(CatalogState.shipping_display, color="#f5f3ff", font_size="15px", font_weight="600"),
+                                width="100%",
+                                justify="between",
+                            ),
+                            rx.divider(border_color="rgba(167, 139, 250, 0.2)"),
+                            rx.hstack(
+                                rx.text("Total", color="#f5f3ff", font_size="16px", font_weight="700"),
+                                rx.text(CatalogState.cart_final_total_display, color="#e9d5ff", font_size="20px", font_weight="800"),
+                                width="100%",
+                                justify="between",
+                            ),
+                            # Coupon Section
+                            rx.vstack(
+                                rx.text("Cupom de Desconto", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                rx.hstack(
+                                    rx.input(
+                                        placeholder="Ex: NIGHTFALL10",
+                                        value=CatalogState.coupon_code,
+                                        on_change=CatalogState.set_coupon_code,
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    rx.button(
+                                        "Aplicar",
+                                        on_click=CatalogState.apply_coupon,
+                                        color_scheme="purple",
+                                        height="42px",
+                                        font_weight="600",
+                                    ),
+                                    width="100%",
+                                    spacing="2",
+                                ),
+                                rx.cond(
+                                    CatalogState.coupon_message != "",
+                                    rx.text(
+                                        CatalogState.coupon_message,
+                                        color=rx.cond(CatalogState.coupon_applied, "#4ade80", "#f87171"),
+                                        font_size="12px",
+                                    ),
+                                    rx.fragment(),
+                                ),
+                                width="100%",
+                                spacing="2",
+                                align="start",
+                                margin_y="8px",
+                            ),
+                            rx.button(
+                                "Ir para o Pagamento",
+                                on_click=CatalogState.proceed_to_checkout,
+                                color_scheme="purple",
+                                size="3",
+                                width="100%",
+                                font_weight="700",
+                                margin_top="12px",
+                            ),
+                            rx.button(
+                                "Esvaziar Carrinho",
+                                on_click=CatalogState.clear_cart,
+                                variant="soft",
+                                color_scheme="gray",
+                                size="2",
+                                width="100%",
+                            ),
+                            width="100%",
+                            flex="1",
+                            min_width="320px",
+                            padding="24px",
+                            background="linear-gradient(145deg, rgba(24, 20, 36, 0.96), rgba(15, 14, 22, 0.98))",
+                            border="1px solid rgba(167, 139, 250, 0.18)",
+                            border_radius="24px",
+                            spacing="4",
+                        ),
+                        direction="row",
+                        wrap="wrap",
+                        spacing="6",
+                        width="100%",
+                        align="start",
+                    ),
+                    rx.vstack(
+                        rx.text(
+                            "Seu carrinho está vazio.",
+                            color="#a1a1aa",
+                            font_size="16px",
+                            text_align="center",
+                        ),
+                        rx.link(
+                            rx.button(
+                                "Explorar Catálogo",
+                                color_scheme="purple",
+                                size="3",
+                                font_weight="700",
+                            ),
+                            href="/",
+                            text_decoration="none",
+                        ),
+                        width="100%",
+                        align="center",
+                        spacing="4",
+                        padding="60px 0",
+                    ),
+                ),
+                width="100%",
+                align="stretch",
+                spacing="5",
+            ),
+            width="100%",
+            max_width="1120px",
+            margin_x="auto",
+            padding="28px clamp(20px, 5vw, 64px) 24px",
+            align="stretch",
+        ),
+        min_height="100vh",
+        width="100%",
+        overflow_x="hidden",
+        background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
+    )
+
+def advanced_filters_panel() -> rx.Component:
     return rx.vstack(
         rx.hstack(
-            rx.heading("Catálogo", size="6", color="#f5f3ff"),
+            rx.text("Filtros Avançados", color="#f5f3ff", font_size="15px", font_weight="700"),
             rx.button(
-                "Todos os produtos",
-                on_click=CatalogState.show_all_products,
-                variant="soft",
+                "Limpar Filtros",
+                on_click=CatalogState.clear_filters,
+                variant="ghost",
                 color_scheme="purple",
+                size="1",
             ),
             width="100%",
             justify="between",
             align="center",
         ),
+        # Price range inputs
+        rx.hstack(
+            rx.vstack(
+                rx.text("Preço Mínimo (R$)", color="#a1a1aa", font_size="12px", font_weight="600"),
+                rx.input(
+                    placeholder="Ex: 500",
+                    value=CatalogState.min_price,
+                    on_change=CatalogState.set_min_price,
+                    width="100%",
+                    height="38px",
+                    background="#11111a",
+                    border="1px solid rgba(167, 139, 250, 0.24)",
+                    border_radius="10px",
+                    color="#f5f3ff",
+                    font_size="13px",
+                ),
+                width="100%",
+                spacing="1",
+                align="start",
+            ),
+            rx.vstack(
+                rx.text("Preço Máximo (R$)", color="#a1a1aa", font_size="12px", font_weight="600"),
+                rx.input(
+                    placeholder="Ex: 5000",
+                    value=CatalogState.max_price,
+                    on_change=CatalogState.set_max_price,
+                    width="100%",
+                    height="38px",
+                    background="#11111a",
+                    border="1px solid rgba(167, 139, 250, 0.24)",
+                    border_radius="10px",
+                    color="#f5f3ff",
+                    font_size="13px",
+                ),
+                width="100%",
+                spacing="1",
+                align="start",
+            ),
+            width="100%",
+            spacing="3",
+        ),
+        # Brand filter pills
+        rx.vstack(
+            rx.text("Marca", color="#a1a1aa", font_size="12px", font_weight="600"),
+            rx.flex(
+                rx.button(
+                    "Todas",
+                    on_click=CatalogState.set_selected_brand("Todas"),
+                    variant=rx.cond(CatalogState.selected_brand == "Todas", "solid", "soft"),
+                    color_scheme="purple",
+                    size="1",
+                ),
+                rx.foreach(
+                    CatalogState.brands,
+                    lambda brand: rx.button(
+                        brand,
+                        on_click=CatalogState.set_selected_brand(brand),
+                        variant=rx.cond(CatalogState.selected_brand == brand, "solid", "soft"),
+                        color_scheme="purple",
+                        size="1",
+                    ),
+                ),
+                wrap="wrap",
+                spacing="2",
+                width="100%",
+            ),
+            width="100%",
+            spacing="1",
+            align="start",
+        ),
+        width="100%",
+        padding="16px",
+        background="linear-gradient(145deg, rgba(20, 17, 30, 0.9), rgba(12, 11, 18, 0.95))",
+        border="1px solid rgba(167, 139, 250, 0.16)",
+        border_radius="16px",
+        spacing="3",
+        align="stretch",
+    )
+
+def product_catalog() -> rx.Component:
+    return rx.vstack(
+        # Barra de pesquisa no topo, expansiva no foco
+        rx.input(
+            placeholder="Pesquisar produtos, marcas ou especificações...",
+            value=CatalogState.search_query,
+            on_change=CatalogState.set_search_query,
+            width="100%",
+            height="52px",
+            background="#11111a",
+            border="1px solid rgba(167, 139, 250, 0.3)",
+            border_radius="14px",
+            color="#f5f3ff",
+            font_size="15px",
+            padding_x="18px",
+            transition="all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+            _focus={
+                "border_color": "#a78bfa",
+                "box_shadow": "0 0 0 2px rgba(167, 139, 250, 0.4), 0 12px 40px rgba(139, 92, 246, 0.3)",
+                "transform": "scale(1.01)",
+            },
+            aria_label="Pesquisar produtos",
+        ),
+        # Painel de Filtros Avançados (Preço e Marca)
+        advanced_filters_panel(),
+        # Cabeçalho da seção com o título e categoria selecionada
+        rx.hstack(
+            rx.heading(
+                rx.cond(
+                    CatalogState.selected_category == "Todos",
+                    "Todos os Produtos",
+                    CatalogState.selected_category,
+                ),
+                size="6",
+                color="#f5f3ff",
+            ),
+            rx.button(
+                "Todos os produtos",
+                on_click=CatalogState.show_all_products,
+                variant="soft",
+                color_scheme="purple",
+                size="2",
+            ),
+            width="100%",
+            justify="between",
+            align="center",
+            margin_y="4px",
+        ),
+        # Grid de produtos
         rx.cond(
             CatalogState.filtered_products.length() > 0,
-            rx.grid(
+            rx.flex(
                 rx.foreach(CatalogState.filtered_products, product_card),
-                columns=rx.breakpoints(initial="1", sm="2", lg="3"),
+                direction="row",
+                wrap="wrap",
                 spacing="5",
                 width="100%",
             ),
             rx.text(
-                "Nenhum produto disponível nesta categoria.",
+                rx.cond(
+                    CatalogState.search_query.strip() != "",
+                    "Nenhum produto encontrado para essa pesquisa.",
+                    "Nenhum produto disponível nesta categoria.",
+                ),
                 color="#a1a1aa",
                 text_align="center",
                 width="100%",
@@ -608,7 +1715,6 @@ def product_catalog() -> rx.Component:
         align="stretch",
         spacing="5",
     )
-
 
 def empty_catalog_state() -> rx.Component:
     return rx.box(
@@ -655,13 +1761,183 @@ def empty_catalog_state() -> rx.Component:
         box_shadow="0 24px 80px rgba(0, 0, 0, 0.28)",
     )
 
-
 def login_page() -> rx.Component:
     return rx.box(
         rx.vstack(
             rx.link(
                 "← Voltar à loja",
                 href="/",
+                color="#c4b5fd",
+                font_size="14px",
+                font_weight="600",
+                text_decoration="none",
+                align_self="start",
+                _hover={"color": "#f5f3ff"},
+                _focus_visible={
+                    "outline": "2px solid #c4b5fd",
+                    "outline_offset": "4px",
+                },
+            ),
+            rx.vstack(
+                rx.box(
+                    rx.text(
+                        "N",
+                        color="#f5f3ff",
+                        font_size="18px",
+                        font_weight="800",
+                        text_align="center",
+                        line_height="40px",
+                    ),
+                    width="40px",
+                    height="40px",
+                    background="linear-gradient(145deg, #a78bfa, #6d28d9)",
+                    border="1px solid rgba(196, 181, 253, 0.35)",
+                    border_radius="12px",
+                    box_shadow="0 8px 28px rgba(139, 92, 246, 0.25)",
+                ),
+                rx.heading(
+                    "Entrar",
+                    size="7",
+                    color="#f5f3ff",
+                    text_align="center",
+                    letter_spacing="-0.045em",
+                ),
+                rx.text(
+                    "Acesse sua conta na NightFall.",
+                    color="#a1a1aa",
+                    font_size="14px",
+                    text_align="center",
+                ),
+                spacing="3",
+                align="center",
+                width="100%",
+            ),
+            rx.vstack(
+                rx.vstack(
+                    rx.text(
+                        "E-mail",
+                        color="#e4e4e7",
+                        font_size="13px",
+                        font_weight="600",
+                    ),
+                    rx.input(
+                        type="email",
+                        value=LoginState.email,
+                        on_change=LoginState.set_email,
+                        placeholder="voce@exemplo.com",
+                        aria_label="E-mail",
+                        required=True,
+                        width="100%",
+                        height="48px",
+                        background="#11111a",
+                        border="1px solid rgba(167, 139, 250, 0.24)",
+                        border_radius="12px",
+                        color="#f5f3ff",
+                        _focus={
+                            "border_color": "#a78bfa",
+                            "box_shadow": "0 0 0 1px #a78bfa",
+                        },
+                    ),
+                    spacing="2",
+                    align="stretch",
+                    width="100%",
+                ),
+                rx.vstack(
+                    rx.text(
+                        "Senha",
+                        color="#e4e4e7",
+                        font_size="13px",
+                        font_weight="600",
+                    ),
+                    rx.input(
+                        type="password",
+                        value=LoginState.password,
+                        on_change=LoginState.set_password,
+                        placeholder="Sua senha",
+                        aria_label="Senha",
+                        required=True,
+                        width="100%",
+                        height="48px",
+                        background="#11111a",
+                        border="1px solid rgba(167, 139, 250, 0.24)",
+                        border_radius="12px",
+                        color="#f5f3ff",
+                        _focus={
+                            "border_color": "#a78bfa",
+                            "box_shadow": "0 0 0 1px #a78bfa",
+                        },
+                    ),
+                    spacing="2",
+                    align="stretch",
+                    width="100%",
+                ),
+                rx.button(
+                    rx.cond(
+                        LoginState.is_submitting,
+                        "Entrando...",
+                        "Entrar",
+                    ),
+                    type="button",
+                    on_click=LoginState.login,
+                    disabled=LoginState.is_submitting,
+                    variant="solid",
+                    color_scheme="purple",
+                    width="100%",
+                    height="48px",
+                    border_radius="12px",
+                    font_size="14px",
+                    font_weight="700",
+                ),
+                rx.text(
+                    LoginState.login_message,
+                    color=rx.cond(
+                        LoginState.login_succeeded,
+                        "#86efac",
+                        "#fca5a5",
+                    ),
+                    font_size="13px",
+                    line_height="1.5",
+                    role="status",
+                    aria_live="polite",
+                ),
+                rx.hstack(
+                    rx.text("Não tem uma conta?", color="#a1a1aa", font_size="14px"),
+                    rx.link("Cadastre-se", href="/cadastro", color="#c4b5fd", font_size="14px", font_weight="600", text_decoration="none", _hover={"color": "#f5f3ff"}),
+                    justify="center",
+                    width="100%",
+                    spacing="2",
+                    margin_top="12px",
+                ),
+                spacing="5",
+                align="stretch",
+                width="100%",
+            ),
+            spacing="7",
+            align="stretch",
+            width="100%",
+            max_width="420px",
+            padding="32px clamp(22px, 6vw, 40px)",
+            background="linear-gradient(145deg, rgba(24, 20, 36, 0.96), rgba(15, 14, 22, 0.98))",
+            border="1px solid rgba(167, 139, 250, 0.18)",
+            border_radius="24px",
+            box_shadow="0 24px 80px rgba(0, 0, 0, 0.35)",
+        ),
+        min_height="100vh",
+        width="100%",
+        padding="24px",
+        display="flex",
+        align_items="center",
+        justify_content="center",
+        overflow_x="hidden",
+        background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), #0b0b12",
+    )
+
+def registration_page() -> rx.Component:
+    return rx.center(
+        rx.vstack(
+            rx.link(
+                "← Voltar ao login",
+                href="/login",
                 color="#c4b5fd",
                 font_size="14px",
                 font_weight="600",
@@ -698,7 +1974,7 @@ def login_page() -> rx.Component:
                     letter_spacing="-0.045em",
                 ),
                 rx.text(
-                    "Cadastre-se na NightFall.",
+                    "Cadastre-se na NightFall com suas informações.",
                     color="#a1a1aa",
                     font_size="14px",
                     text_align="center",
@@ -708,6 +1984,93 @@ def login_page() -> rx.Component:
                 width="100%",
             ),
             rx.vstack(
+                rx.vstack(
+                    rx.text(
+                        "Nome completo",
+                        color="#e4e4e7",
+                        font_size="13px",
+                        font_weight="600",
+                    ),
+                    rx.input(
+                        type="text",
+                        value=RegistrationState.name,
+                        on_change=RegistrationState.set_name,
+                        placeholder="Seu nome completo",
+                        aria_label="Nome completo",
+                        required=True,
+                        width="100%",
+                        height="48px",
+                        background="#11111a",
+                        border="1px solid rgba(167, 139, 250, 0.24)",
+                        border_radius="12px",
+                        color="#f5f3ff",
+                        _focus={
+                            "border_color": "#a78bfa",
+                            "box_shadow": "0 0 0 1px #a78bfa",
+                        },
+                    ),
+                    spacing="2",
+                    align="stretch",
+                    width="100%",
+                ),
+                rx.vstack(
+                    rx.text(
+                        "CPF",
+                        color="#e4e4e7",
+                        font_size="13px",
+                        font_weight="600",
+                    ),
+                    rx.input(
+                        type="text",
+                        value=RegistrationState.cpf,
+                        on_change=RegistrationState.set_cpf,
+                        placeholder="000.000.000-00",
+                        max_length=11,
+                        aria_label="CPF",
+                        required=True,
+                        width="100%",
+                        height="48px",
+                        background="#11111a",
+                        border="1px solid rgba(167, 139, 250, 0.24)",
+                        border_radius="12px",
+                        color="#f5f3ff",
+                        _focus={
+                            "border_color": "#a78bfa",
+                            "box_shadow": "0 0 0 1px #a78bfa",
+                        },
+                    ),
+                    spacing="2",
+                    align="stretch",
+                    width="100%",
+                ),
+                rx.vstack(
+                    rx.text(
+                        "Data de Nascimento",
+                        color="#e4e4e7",
+                        font_size="13px",
+                        font_weight="600",
+                    ),
+                    rx.input(
+                        value=RegistrationState.birth_date,
+                        on_change=RegistrationState.set_birth_date,
+                        placeholder="DD/MM/YYYY",
+                        aria_label="Data de Nascimento",
+                        required=True,
+                        width="100%",
+                        height="48px",
+                        background="#11111a",
+                        border="1px solid rgba(167, 139, 250, 0.24)",
+                        border_radius="12px",
+                        color="#f5f3ff",
+                        _focus={
+                            "border_color": "#a78bfa",
+                            "box_shadow": "0 0 0 1px #a78bfa",
+                        },
+                    ),
+                    spacing="2",
+                    align="stretch",
+                    width="100%",
+                ),
                 rx.vstack(
                     rx.text(
                         "E-mail",
@@ -783,17 +2146,50 @@ def login_page() -> rx.Component:
                     font_size="14px",
                     font_weight="700",
                 ),
-                rx.text(
-                    RegistrationState.registration_message,
-                    color=rx.cond(
-                        RegistrationState.registration_succeeded,
-                        "#86efac",
-                        "#fca5a5",
+                rx.cond(
+                    RegistrationState.registration_message != "",
+                    rx.box(
+                        rx.hstack(
+                            rx.text(
+                                rx.cond(RegistrationState.registration_succeeded, "✓", "⚠"),
+                                color=rx.cond(RegistrationState.registration_succeeded, "#4ade80", "#f87171"),
+                                font_weight="700",
+                            ),
+                            rx.text(
+                                RegistrationState.registration_message,
+                                color=rx.cond(RegistrationState.registration_succeeded, "#86efac", "#fca5a5"),
+                                font_size="13px",
+                                font_weight="600",
+                                line_height="1.5",
+                            ),
+                            spacing="2",
+                            align="center",
+                        ),
+                        padding="12px 16px",
+                        background=rx.cond(
+                            RegistrationState.registration_succeeded,
+                            "rgba(34, 197, 94, 0.1)",
+                            "rgba(239, 68, 68, 0.12)",
+                        ),
+                        border=rx.cond(
+                            RegistrationState.registration_succeeded,
+                            "1px solid rgba(74, 222, 128, 0.3)",
+                            "1px solid rgba(248, 113, 113, 0.35)",
+                        ),
+                        border_radius="12px",
+                        width="100%",
+                        role="status",
+                        aria_live="polite",
                     ),
-                    font_size="13px",
-                    line_height="1.5",
-                    role="status",
-                    aria_live="polite",
+                    rx.fragment(),
+                ),
+                rx.hstack(
+                    rx.text("Já tem uma conta?", color="#a1a1aa", font_size="14px"),
+                    rx.link("Faça login", href="/login", color="#c4b5fd", font_size="14px", font_weight="600", text_decoration="none", _hover={"color": "#f5f3ff"}),
+                    justify="center",
+                    width="100%",
+                    spacing="2",
+                    margin_top="12px",
                 ),
                 spacing="5",
                 align="stretch",
@@ -812,13 +2208,8 @@ def login_page() -> rx.Component:
         min_height="100vh",
         width="100%",
         padding="24px",
-        display="flex",
-        align_items="center",
-        justify_content="center",
-        overflow_x="hidden",
         background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), #0b0b12",
     )
-
 
 def index() -> rx.Component:
     return rx.box(
@@ -848,27 +2239,98 @@ def index() -> rx.Component:
                         color="#f5f3ff",
                         letter_spacing="-0.04em",
                     ),
-                    rx.link(
-                        "Login",
-                        href="/login",
-                        color="#f5f3ff",
-                        background="rgba(139, 92, 246, 0.18)",
-                        border="1px solid rgba(167, 139, 250, 0.24)",
-                        border_radius="999px",
-                        padding_x="16px",
-                        padding_y="8px",
-                        font_size="13px",
-                        font_weight="600",
-                        text_decoration="none",
-                        transition="background-color 160ms ease, border-color 160ms ease",
-                        _hover={
-                            "background": "rgba(139, 92, 246, 0.28)",
-                            "border_color": "rgba(196, 181, 253, 0.5)",
-                        },
-                        _focus_visible={
-                            "outline": "2px solid #c4b5fd",
-                            "outline_offset": "2px",
-                        },
+                    rx.cond(
+                        AuthState.is_logged_in,
+                        rx.hstack(
+                            rx.link(
+                                rx.text(
+                                    AuthState.user_name,
+                                    color="#f5f3ff",
+                                    font_size="13px",
+                                    font_weight="600",
+                                ),
+                                href="/perfil",
+                                text_decoration="none",
+                                _hover={"color": "#c4b5fd"},
+                            ),
+                            rx.button(
+                                "Sair",
+                                on_click=AuthState.set_logout_dialog_open(True),
+                                variant="soft",
+                                color_scheme="gray",
+                                size="1",
+                                cursor="pointer",
+                            ),
+                            rx.dialog.root(
+                                rx.dialog.content(
+                                    rx.vstack(
+                                        rx.dialog.title("Confirmar Saída", color="#f5f3ff"),
+                                        rx.dialog.description(
+                                            "Tem certeza que deseja fazer o logout da sua conta?",
+                                            color="#a1a1aa",
+                                        ),
+                                        rx.hstack(
+                                            rx.dialog.close(
+                                                rx.button(
+                                                    "Cancelar",
+                                                    variant="soft",
+                                                    color_scheme="gray",
+                                                    on_click=AuthState.set_logout_dialog_open(False),
+                                                ),
+                                            ),
+                                            rx.button(
+                                                "Sim, sair",
+                                                color_scheme="red",
+                                                on_click=AuthState.confirm_logout,
+                                            ),
+                                            spacing="3",
+                                            justify="end",
+                                            width="100%",
+                                            margin_top="16px",
+                                        ),
+                                        spacing="4",
+                                        align="start",
+                                        width="100%",
+                                    ),
+                                    background="#101018",
+                                    border="1px solid rgba(167, 139, 250, 0.2)",
+                                    border_radius="20px",
+                                    padding="24px",
+                                    max_width="400px",
+                                ),
+                                open=AuthState.logout_dialog_open,
+                                on_open_change=AuthState.set_logout_dialog_open,
+                            ),
+                            spacing="2",
+                            align="center",
+                            background="rgba(139, 92, 246, 0.18)",
+                            border="1px solid rgba(167, 139, 250, 0.24)",
+                            border_radius="999px",
+                            padding_x="14px",
+                            padding_y="6px",
+                        ),
+                        rx.link(
+                            "Login",
+                            href="/login",
+                            color="#f5f3ff",
+                            background="rgba(139, 92, 246, 0.18)",
+                            border="1px solid rgba(167, 139, 250, 0.24)",
+                            border_radius="999px",
+                            padding_x="16px",
+                            padding_y="8px",
+                            font_size="13px",
+                            font_weight="600",
+                            text_decoration="none",
+                            transition="background-color 160ms ease, border-color 160ms ease",
+                            _hover={
+                                "background": "rgba(139, 92, 246, 0.28)",
+                                "border_color": "rgba(196, 181, 253, 0.5)",
+                            },
+                            _focus_visible={
+                                "outline": "2px solid #c4b5fd",
+                                "outline_offset": "2px",
+                            },
+                        ),
                     ),
                     spacing="3",
                     align="center",
@@ -1017,15 +2479,29 @@ def index() -> rx.Component:
                         on_open_change=CatalogState.set_category_menu_open,
                     ),
                     rx.button(
-                        rx.icon("shopping_cart", size=18),
+                        rx.hstack(
+                            rx.icon("shopping_cart", size=18),
+                            rx.cond(
+                                CatalogState.cart_count > 0,
+                                rx.badge(
+                                    CatalogState.cart_count,
+                                    color_scheme="purple",
+                                    variant="solid",
+                                    size="1",
+                                ),
+                                rx.fragment(),
+                            ),
+                            spacing="2",
+                            align="center",
+                        ),
+                        on_click=rx.redirect("/carrinho"),
                         variant="soft",
                         color_scheme="purple",
                         type="button",
-                        aria_label="Carrinho de compras (apenas visual)",
-                        width="40px",
+                        aria_label="Carrinho de compras",
                         height="40px",
                         min_width="40px",
-                        padding="0",
+                        padding_x="12px",
                         flex_shrink="0",
                         _focus_visible={
                             "outline": "2px solid #c4b5fd",
@@ -1051,29 +2527,6 @@ def index() -> rx.Component:
                         background_color="#a78bfa",
                         border_radius="999px",
                         box_shadow="0 0 20px rgba(167, 139, 250, 0.75)",
-                    ),
-                    rx.text(
-                        "NIGHTFALL  /  HARDWARE",
-                        color="#c4b5fd",
-                        font_size="12px",
-                        font_weight="700",
-                        letter_spacing="0.16em",
-                    ),
-                    rx.heading(
-                        "Tecnologia para ir além.",
-                        size="8",
-                        color="#f5f3ff",
-                        text_align="center",
-                        letter_spacing="-0.055em",
-                        line_height="1.08",
-                    ),
-                    rx.text(
-                        "Estamos preparando uma nova experiência para quem vive tecnologia.",
-                        color="#a1a1aa",
-                        font_size="16px",
-                        line_height="1.7",
-                        text_align="center",
-                        max_width="520px",
                     ),
                     rx.cond(
                         CatalogState.products.length() > 0,
@@ -1107,7 +2560,1058 @@ def index() -> rx.Component:
         background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
     )
 
+def checkout_page() -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            # Header
+            rx.hstack(
+                rx.link(
+                    "← Voltar ao Carrinho",
+                    href="/carrinho",
+                    color="#c4b5fd",
+                    font_size="14px",
+                    font_weight="600",
+                    text_decoration="none",
+                    _hover={"color": "#f5f3ff"},
+                ),
+                rx.hstack(
+                    rx.box(
+                        rx.text(
+                            "N",
+                            color="#f5f3ff",
+                            font_size="18px",
+                            font_weight="800",
+                            text_align="center",
+                            line_height="40px",
+                        ),
+                        width="40px",
+                        height="40px",
+                        background="linear-gradient(145deg, #a78bfa, #6d28d9)",
+                        border="1px solid rgba(196, 181, 253, 0.35)",
+                        border_radius="12px",
+                        box_shadow="0 8px 28px rgba(139, 92, 246, 0.25)",
+                    ),
+                    rx.heading(
+                        "NightFall Checkout",
+                        size="5",
+                        color="#f5f3ff",
+                        letter_spacing="-0.04em",
+                    ),
+                    spacing="3",
+                    align="center",
+                ),
+                width="100%",
+                justify="between",
+                align="center",
+                padding_bottom="24px",
+                border_bottom="1px solid rgba(167, 139, 250, 0.16)",
+            ),
+            # Content / Auth Guard & Success cond
+            rx.cond(
+                AuthState.is_logged_in,
+                rx.cond(
+                    CatalogState.order_success,
+                    # Success View
+                    rx.vstack(
+                        rx.box(
+                            rx.icon("circle_check", size=48, color="#4ade80"),
+                            padding="16px",
+                            background="rgba(74, 222, 128, 0.1)",
+                            border_radius="50%",
+                            border="1px solid rgba(74, 222, 128, 0.3)",
+                        ),
+                        rx.heading("Pedido Realizado com Sucesso!", size="7", color="#f5f3ff"),
+                        rx.text(
+                            f"Número do Pedido: {CatalogState.order_id}",
+                            color="#a78bfa",
+                            font_size="16px",
+                            font_weight="700",
+                        ),
+                        rx.text(
+                            "Obrigado por comprar na NightFall! Seu pedido está sendo processado e enviado para o seu endereço.",
+                            color="#a1a1aa",
+                            font_size="14px",
+                            text_align="center",
+                            max_width="480px",
+                        ),
+                        rx.link(
+                            rx.button(
+                                "Voltar para a Loja",
+                                color_scheme="purple",
+                                size="3",
+                                font_weight="700",
+                            ),
+                            href="/",
+                            text_decoration="none",
+                            margin_top="16px",
+                        ),
+                        width="100%",
+                        align="center",
+                        spacing="4",
+                        padding="60px 24px",
+                        background="linear-gradient(145deg, rgba(24, 20, 36, 0.96), rgba(15, 14, 22, 0.98))",
+                        border="1px solid rgba(167, 139, 250, 0.18)",
+                        border_radius="24px",
+                    ),
+                    # Checkout Form & Summary View
+                    rx.flex(
+                    # Left: Form (Address & Payment)
+                    rx.vstack(
+                        rx.heading("Endereço de Entrega", size="5", color="#f5f3ff"),
+                        rx.flex(
+                            rx.vstack(
+                                rx.text("CEP", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                rx.input(
+                                    placeholder="00000-000",
+                                    value=CatalogState.shipping_cep,
+                                    on_change=CatalogState.set_shipping_cep,
+                                    width="100%",
+                                    height="42px",
+                                    background="#11111a",
+                                    border="1px solid rgba(167, 139, 250, 0.24)",
+                                    border_radius="10px",
+                                    color="#f5f3ff",
+                                ),
+                                width="100%",
+                                flex="1",
+                                spacing="2",
+                                align="start",
+                            ),
+                            rx.vstack(
+                                rx.text("Estado (UF)", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                rx.input(
+                                    placeholder="SP",
+                                    value=CatalogState.shipping_state,
+                                    on_change=CatalogState.set_shipping_state,
+                                    width="100%",
+                                    height="42px",
+                                    background="#11111a",
+                                    border="1px solid rgba(167, 139, 250, 0.24)",
+                                    border_radius="10px",
+                                    color="#f5f3ff",
+                                ),
+                                width="120px",
+                                spacing="2",
+                                align="start",
+                            ),
+                            spacing="4",
+                            width="100%",
+                        ),
+                        rx.flex(
+                            rx.vstack(
+                                rx.text("Endereço / Rua", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                rx.input(
+                                    placeholder="Ex: Av. Paulista",
+                                    value=CatalogState.shipping_address,
+                                    on_change=CatalogState.set_shipping_address,
+                                    width="100%",
+                                    height="42px",
+                                    background="#11111a",
+                                    border="1px solid rgba(167, 139, 250, 0.24)",
+                                    border_radius="10px",
+                                    color="#f5f3ff",
+                                ),
+                                width="100%",
+                                flex="3",
+                                spacing="2",
+                                align="start",
+                            ),
+                            rx.vstack(
+                                rx.text("Número", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                rx.input(
+                                    placeholder="1000",
+                                    value=CatalogState.shipping_number,
+                                    on_change=CatalogState.set_shipping_number,
+                                    width="100%",
+                                    height="42px",
+                                    background="#11111a",
+                                    border="1px solid rgba(167, 139, 250, 0.24)",
+                                    border_radius="10px",
+                                    color="#f5f3ff",
+                                ),
+                                width="120px",
+                                spacing="2",
+                                align="start",
+                            ),
+                            rx.vstack(
+                                rx.text("Complemento", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                rx.input(
+                                    placeholder="Apto, Bloco, etc.",
+                                    value=CatalogState.shipping_complement,
+                                    on_change=CatalogState.set_shipping_complement,
+                                    width="100%",
+                                    height="42px",
+                                    background="#11111a",
+                                    border="1px solid rgba(167, 139, 250, 0.24)",
+                                    border_radius="10px",
+                                    color="#f5f3ff",
+                                ),
+                                width="100%",
+                                flex="1",
+                                spacing="2",
+                                align="start",
+                            ),
+                            spacing="4",
+                            width="100%",
+                        ),
+                        rx.flex(
+                            rx.vstack(
+                                rx.text("Bairro", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                rx.input(
+                                    placeholder="Bairro",
+                                    value=CatalogState.shipping_neighborhood,
+                                    on_change=CatalogState.set_shipping_neighborhood,
+                                    width="100%",
+                                    height="42px",
+                                    background="#11111a",
+                                    border="1px solid rgba(167, 139, 250, 0.24)",
+                                    border_radius="10px",
+                                    color="#f5f3ff",
+                                ),
+                                width="100%",
+                                flex="1",
+                                spacing="2",
+                                align="start",
+                            ),
+                            rx.vstack(
+                                rx.text("Cidade", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                rx.input(
+                                    placeholder="Cidade",
+                                    value=CatalogState.shipping_city,
+                                    on_change=CatalogState.set_shipping_city,
+                                    width="100%",
+                                    height="42px",
+                                    background="#11111a",
+                                    border="1px solid rgba(167, 139, 250, 0.24)",
+                                    border_radius="10px",
+                                    color="#f5f3ff",
+                                ),
+                                width="100%",
+                                flex="1",
+                                spacing="2",
+                                align="start",
+                            ),
+                            spacing="4",
+                            width="100%",
+                        ),
+                        rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                        rx.heading("Forma de Pagamento", size="5", color="#f5f3ff"),
+                        rx.hstack(
+                            rx.button(
+                                "Cartão de Crédito",
+                                on_click=CatalogState.set_payment_method("credit_card"),
+                                variant=rx.cond(CatalogState.payment_method == "credit_card", "solid", "soft"),
+                                color_scheme="purple",
+                                flex="1",
+                            ),
+                            rx.button(
+                                "Pix",
+                                on_click=CatalogState.set_payment_method("pix"),
+                                variant=rx.cond(CatalogState.payment_method == "pix", "solid", "soft"),
+                                color_scheme="purple",
+                                flex="1",
+                            ),
+                            rx.button(
+                                "Boleto",
+                                on_click=CatalogState.set_payment_method("boleto"),
+                                variant=rx.cond(CatalogState.payment_method == "boleto", "solid", "soft"),
+                                color_scheme="purple",
+                                flex="1",
+                            ),
+                            width="100%",
+                            spacing="3",
+                        ),
+                        # Conditional Payment Inputs
+                        rx.cond(
+                            CatalogState.payment_method == "credit_card",
+                            rx.vstack(
+                                rx.vstack(
+                                    rx.text("Número do Cartão", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        placeholder="0000 0000 0000 0000",
+                                        value=CatalogState.card_number,
+                                        on_change=CatalogState.set_card_number,
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%",
+                                    spacing="2",
+                                    align="start",
+                                ),
+                                rx.vstack(
+                                    rx.text("Nome no Cartão", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        placeholder="Nome como impresso no cartão",
+                                        value=CatalogState.card_name,
+                                        on_change=CatalogState.set_card_name,
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%",
+                                    spacing="2",
+                                    align="start",
+                                ),
+                                rx.flex(
+                                    rx.vstack(
+                                        rx.text("Validade", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                        rx.input(
+                                            placeholder="MM/AA",
+                                            value=CatalogState.card_expiry,
+                                            on_change=CatalogState.set_card_expiry,
+                                            width="100%",
+                                            height="42px",
+                                            background="#11111a",
+                                            border="1px solid rgba(167, 139, 250, 0.24)",
+                                            border_radius="10px",
+                                            color="#f5f3ff",
+                                        ),
+                                        width="100%",
+                                        flex="1",
+                                        spacing="2",
+                                        align="start",
+                                    ),
+                                    rx.vstack(
+                                        rx.text("CVV", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                        rx.input(
+                                            placeholder="123",
+                                            value=CatalogState.card_cvv,
+                                            on_change=CatalogState.set_card_cvv,
+                                            width="100%",
+                                            height="42px",
+                                            background="#11111a",
+                                            border="1px solid rgba(167, 139, 250, 0.24)",
+                                            border_radius="10px",
+                                            color="#f5f3ff",
+                                        ),
+                                        width="120px",
+                                        spacing="2",
+                                        align="start",
+                                    ),
+                                    spacing="4",
+                                    width="100%",
+                                ),
+                                width="100%",
+                                spacing="3",
+                            ),
+                            rx.cond(
+                                CatalogState.payment_method == "pix",
+                                rx.vstack(
+                                    rx.center(
+                                        rx.vstack(
+                                            rx.icon("qr_code", size=64, color="#c4b5fd"),
+                                            rx.text("Escaneie o QR Code com o app do seu banco", color="#f5f3ff", font_size="14px", font_weight="600"),
+                                            rx.text("Chave Pix Copia e Cola gerada com sucesso para pagamento instantâneo.", color="#a1a1aa", font_size="12px", text_align="center"),
+                                            spacing="2",
+                                            align="center",
+                                        ),
+                                        width="100%",
+                                        padding="24px",
+                                        background="#11111a",
+                                        border="1px dashed rgba(167, 139, 250, 0.4)",
+                                        border_radius="12px",
+                                    ),
+                                    width="100%",
+                                    spacing="3",
+                                ),
+                                rx.vstack(
+                                    rx.center(
+                                        rx.vstack(
+                                            rx.icon("file_text", size=48, color="#c4b5fd"),
+                                            rx.text("Boleto Bancário gerado com sucesso!", color="#f5f3ff", font_size="14px", font_weight="600"),
+                                            rx.text("O boleto vence em 3 dias úteis. A aprovação ocorre em até 48h após o pagamento.", color="#a1a1aa", font_size="12px", text_align="center"),
+                                            spacing="2",
+                                            align="center",
+                                        ),
+                                        width="100%",
+                                        padding="24px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.2)",
+                                        border_radius="12px",
+                                    ),
+                                    width="100%",
+                                    spacing="3",
+                                ),
+                            ),
+                        ),
+                        width="100%",
+                        flex="2",
+                        spacing="4",
+                        padding="24px",
+                        background="linear-gradient(145deg, rgba(24, 20, 36, 0.96), rgba(15, 14, 22, 0.98))",
+                        border="1px solid rgba(167, 139, 250, 0.18)",
+                        border_radius="24px",
+                    ),
+                    # Right: Order Summary card
+                    rx.vstack(
+                        rx.heading("Resumo do Pedido", size="5", color="#f5f3ff"),
+                        rx.divider(border_color="rgba(167, 139, 250, 0.2)"),
+                        rx.hstack(
+                            rx.text("Subtotal", color="#a1a1aa", font_size="14px"),
+                            rx.text(CatalogState.cart_total_display, color="#f5f3ff", font_size="15px", font_weight="600"),
+                            width="100%",
+                            justify="between",
+                        ),
+                        rx.cond(
+                            CatalogState.coupon_applied,
+                            rx.hstack(
+                                rx.text("Desconto (NIGHTFALL10)", color="#4ade80", font_size="14px"),
+                                rx.text(CatalogState.cart_discount_display, color="#4ade80", font_size="15px", font_weight="600"),
+                                width="100%",
+                                justify="between",
+                            ),
+                            rx.fragment(),
+                        ),
+                        rx.hstack(
+                            rx.text("Frete", color="#a1a1aa", font_size="14px"),
+                            rx.text(CatalogState.shipping_display, color="#f5f3ff", font_size="15px", font_weight="600"),
+                            width="100%",
+                            justify="between",
+                        ),
+                        rx.divider(border_color="rgba(167, 139, 250, 0.2)"),
+                        rx.hstack(
+                            rx.text("Total", color="#f5f3ff", font_size="16px", font_weight="700"),
+                            rx.text(CatalogState.cart_final_total_display, color="#e9d5ff", font_size="20px", font_weight="800"),
+                            width="100%",
+                            justify="between",
+                        ),
+                        rx.button(
+                            "Confirmar Pedido",
+                            on_click=CatalogState.finalize_order,
+                            color_scheme="purple",
+                            size="3",
+                            width="100%",
+                            font_weight="700",
+                            margin_top="16px",
+                        ),
+                        width="100%",
+                        flex="1",
+                        min_width="320px",
+                        padding="24px",
+                        background="linear-gradient(145deg, rgba(24, 20, 36, 0.96), rgba(15, 14, 22, 0.98))",
+                        border="1px solid rgba(167, 139, 250, 0.18)",
+                        border_radius="24px",
+                        spacing="4",
+                    ),
+                    direction="row",
+                    wrap="wrap",
+                    spacing="6",
+                    width="100%",
+                    align="start",
+                ),
+            ),
+            # Not logged in view
+            rx.vstack(
+                rx.box(
+                    rx.icon("lock", size=48, color="#a78bfa"),
+                    padding="16px",
+                    background="rgba(167, 139, 250, 0.1)",
+                    border_radius="50%",
+                    border="1px solid rgba(167, 139, 250, 0.3)",
+                ),
+                rx.heading("Identificação Necessária", size="7", color="#f5f3ff"),
+                rx.text(
+                    "Você precisa estar logado na sua conta NightFall para acessar a página de pagamento.",
+                    color="#a1a1aa",
+                    font_size="14px",
+                    text_align="center",
+                    max_width="480px",
+                ),
+                rx.link(
+                    rx.button(
+                        "Fazer Login para Continuar",
+                        color_scheme="purple",
+                        size="3",
+                        font_weight="700",
+                    ),
+                    href="/login",
+                    text_decoration="none",
+                    margin_top="16px",
+                ),
+                width="100%",
+                align="center",
+                spacing="4",
+                padding="60px 24px",
+                background="linear-gradient(145deg, rgba(24, 20, 36, 0.96), rgba(15, 14, 22, 0.98))",
+                border="1px solid rgba(167, 139, 250, 0.18)",
+                border_radius="24px",
+            ),
+        ),
+            width="100%",
+            max_width="1120px",
+            margin_x="auto",
+            padding="28px clamp(20px, 5vw, 64px) 24px",
+            align="stretch",
+        ),
+        min_height="100vh",
+        width="100%",
+        overflow_x="hidden",
+        background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
+    )
+
+def address_row(addr: rx.Var[AddressItem]) -> rx.Component:
+    return rx.hstack(
+        rx.vstack(
+            rx.hstack(
+                rx.text(addr["title"], color="#f5f3ff", font_weight="700", font_size="15px"),
+                rx.cond(
+                    addr["is_main"],
+                    rx.badge("Principal", color_scheme="purple", variant="solid", size="1"),
+                    rx.fragment(),
+                ),
+                spacing="2",
+                align="center",
+            ),
+            rx.text(
+                rx.cond(
+                    addr["complement"] != "",
+                    addr["street"] + ", " + addr["number"] + " - " + addr["complement"] + ", " + addr["neighborhood"] + " - " + addr["city"] + " - " + addr["state"],
+                    addr["street"] + ", " + addr["number"] + ", " + addr["neighborhood"] + " - " + addr["city"] + " - " + addr["state"]
+                ),
+                color="#a1a1aa",
+                font_size="13px",
+            ),
+            rx.text("CEP: " + addr["cep"], color="#a1a1aa", font_size="12px"),
+            spacing="1",
+            align="start",
+        ),
+        rx.hstack(
+            rx.cond(
+                ~addr["is_main"],
+                rx.button(
+                    "Tornar Principal",
+                    on_click=AuthState.set_main_address(addr["id"]),
+                    size="1",
+                    variant="soft",
+                    color_scheme="purple",
+                ),
+                rx.fragment(),
+            ),
+            rx.button(
+                "Remover",
+                on_click=AuthState.delete_address(addr["id"]),
+                size="1",
+                variant="soft",
+                color_scheme="red",
+            ),
+            spacing="2",
+            align="center",
+        ),
+        width="100%",
+        justify="between",
+        align="center",
+        padding="16px",
+        background="#11111a",
+        border="1px solid rgba(167, 139, 250, 0.2)",
+        border_radius="12px",
+    )
+
+def profile_page() -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            # Header
+            rx.hstack(
+                rx.link(
+                    "← Voltar à Loja",
+                    href="/",
+                    color="#c4b5fd",
+                    font_size="14px",
+                    font_weight="600",
+                    text_decoration="none",
+                    _hover={"color": "#f5f3ff"},
+                ),
+                rx.hstack(
+                    rx.box(
+                        rx.text(
+                            "N",
+                            color="#f5f3ff",
+                            font_size="18px",
+                            font_weight="800",
+                            text_align="center",
+                            line_height="40px",
+                        ),
+                        width="40px",
+                        height="40px",
+                        background="linear-gradient(145deg, #a78bfa, #6d28d9)",
+                        border="1px solid rgba(196, 181, 253, 0.35)",
+                        border_radius="12px",
+                        box_shadow="0 8px 28px rgba(139, 92, 246, 0.25)",
+                    ),
+                    rx.heading(
+                        "NightFall Perfil",
+                        size="5",
+                        color="#f5f3ff",
+                        letter_spacing="-0.04em",
+                    ),
+                    spacing="3",
+                    align="center",
+                ),
+                width="100%",
+                justify="between",
+                align="center",
+                padding_bottom="24px",
+                border_bottom="1px solid rgba(167, 139, 250, 0.16)",
+            ),
+            # Content / Auth Guard
+            rx.cond(
+                AuthState.is_logged_in,
+                rx.flex(
+                    # Left Mini Menu
+                    rx.vstack(
+                        rx.heading("Painel", size="4", color="#f5f3ff", margin_bottom="8px"),
+                        rx.button(
+                            "Meus Dados",
+                            on_click=AuthState.set_profile_tab("dados"),
+                            variant=rx.cond(AuthState.profile_tab == "dados", "solid", "soft"),
+                            color_scheme="purple",
+                            width="100%",
+                            justify_content="start",
+                        ),
+                        rx.button(
+                            "Meus Pedidos",
+                            on_click=AuthState.set_profile_tab("pedidos"),
+                            variant=rx.cond(AuthState.profile_tab == "pedidos", "solid", "soft"),
+                            color_scheme="purple",
+                            width="100%",
+                            justify_content="start",
+                        ),
+                        rx.button(
+                            "Garantia",
+                            on_click=AuthState.set_profile_tab("garantia"),
+                            variant=rx.cond(AuthState.profile_tab == "garantia", "solid", "soft"),
+                            color_scheme="purple",
+                            width="100%",
+                            justify_content="start",
+                        ),
+                        rx.button(
+                            "Endereços",
+                            on_click=AuthState.set_profile_tab("enderecos"),
+                            variant=rx.cond(AuthState.profile_tab == "enderecos", "solid", "soft"),
+                            color_scheme="purple",
+                            width="100%",
+                            justify_content="start",
+                        ),
+                        width="100%",
+                        flex="1",
+                        min_width="240px",
+                        padding="20px",
+                        background="linear-gradient(145deg, rgba(24, 20, 36, 0.96), rgba(15, 14, 22, 0.98))",
+                        border="1px solid rgba(167, 139, 250, 0.18)",
+                        border_radius="20px",
+                        spacing="3",
+                    ),
+                    # Right Content Area
+                    rx.box(
+                        rx.cond(
+                            AuthState.profile_tab == "dados",
+                            rx.vstack(
+                                rx.heading("Meus Dados Cadastrais", size="6", color="#f5f3ff"),
+                                rx.text("Gerencie suas informações pessoais e de contato.", color="#a1a1aa", font_size="14px"),
+                                rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                                rx.vstack(
+                                    rx.text("Nome do Usuário", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AuthState.user_name,
+                                        on_change=AuthState.set_user_name,
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%",
+                                    spacing="2",
+                                    align="start",
+                                ),
+                                rx.vstack(
+                                    rx.text("CPF", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AuthState.user_cpf,
+                                        on_change=AuthState.set_user_cpf,
+                                        placeholder="000.000.000-00",
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%",
+                                    spacing="2",
+                                    align="start",
+                                ),
+                                rx.vstack(
+                                    rx.text("Data de Nascimento", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AuthState.user_birth_date,
+                                        on_change=AuthState.set_user_birth_date,
+                                        placeholder="DD/MM/YYYY",
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%",
+                                    spacing="2",
+                                    align="start",
+                                ),
+                                rx.vstack(
+                                    rx.text("E-mail (Cadastrado)", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AuthState.user_email,
+                                        is_read_only=True,
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#a1a1aa",
+                                    ),
+                                    width="100%",
+                                    spacing="2",
+                                    align="start",
+                                ),
+                                rx.cond(
+                                    AuthState.profile_message != "",
+                                    rx.text(AuthState.profile_message, color="#4ade80", font_size="13px"),
+                                    rx.fragment(),
+                                ),
+                                rx.button(
+                                    "Salvar Alterações",
+                                    on_click=AuthState.save_profile,
+                                    background="linear-gradient(145deg, #a78bfa, #6d28d9)",
+                                    color="#f5f3ff",
+                                    font_weight="600",
+                                    width="100%",
+                                    height="42px",
+                                    border_radius="10px",
+                                    cursor="pointer",
+                                ),
+                                width="100%",
+                                spacing="4",
+                            ),
+                            rx.cond(
+                                AuthState.profile_tab == "pedidos",
+                                rx.vstack(
+                                    rx.heading("Meus Pedidos", size="6", color="#f5f3ff"),
+                                    rx.text("Acompanhe o histórico e status das suas compras recentes.", color="#a1a1aa", font_size="14px"),
+                                    rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                                    rx.vstack(
+                                        rx.hstack(
+                                            rx.vstack(
+                                                rx.text("Pedido #NF-84920", color="#f5f3ff", font_weight="700", font_size="15px"),
+                                                rx.text("Data: 26/10/2026 • 1 item", color="#a1a1aa", font_size="13px"),
+                                                spacing="1",
+                                                align="start",
+                                            ),
+                                            rx.vstack(
+                                                rx.text("R$ 2.609,91", color="#e9d5ff", font_weight="700", font_size="15px"),
+                                                rx.badge("Concluído", color_scheme="green", variant="solid", size="1"),
+                                                spacing="1",
+                                                align="end",
+                                            ),
+                                            width="100%",
+                                            justify="between",
+                                            align="center",
+                                            padding="16px",
+                                            background="#11111a",
+                                            border="1px solid rgba(167, 139, 250, 0.2)",
+                                            border_radius="12px",
+                                        ),
+                                        width="100%",
+                                        spacing="3",
+                                    ),
+                                    width="100%",
+                                    spacing="4",
+                                ),
+                                rx.cond(
+                                    AuthState.profile_tab == "garantia",
+                                    rx.vstack(
+                                        rx.heading("Garantia de Produtos", size="6", color="#f5f3ff"),
+                                        rx.text("Consulte a vigência e termos de garantia dos seus hardwares.", color="#a1a1aa", font_size="14px"),
+                                        rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                                        rx.vstack(
+                                            rx.hstack(
+                                                rx.vstack(
+                                                    rx.text("Processador AMD Ryzen 7 7800X3D", color="#f5f3ff", font_weight="700", font_size="15px"),
+                                                    rx.text("Garantia de Fábrica: 3 Anos (Válida até Out/2029)", color="#4ade80", font_size="13px"),
+                                                    spacing="1",
+                                                    align="start",
+                                                ),
+                                                rx.badge("Ativa", color_scheme="purple", variant="solid", size="1"),
+                                                width="100%",
+                                                justify="between",
+                                                align="center",
+                                                padding="16px",
+                                                background="#11111a",
+                                                border="1px solid rgba(167, 139, 250, 0.2)",
+                                                border_radius="12px",
+                                            ),
+                                            width="100%",
+                                            spacing="3",
+                                        ),
+                                        width="100%",
+                                        spacing="4",
+                                    ),
+                                    rx.cond(
+                                        AuthState.profile_tab == "enderecos",
+                                        rx.vstack(
+                                            rx.hstack(
+                                                rx.vstack(
+                                                    rx.heading("Endereços Cadastrados", size="6", color="#f5f3ff"),
+                                                    rx.text("Gerencie seus endereços para entregas rápidas.", color="#a1a1aa", font_size="14px"),
+                                                    spacing="1",
+                                                    align="start",
+                                                ),
+                                                rx.button(
+                                                    rx.cond(AuthState.is_adding_address, "Cancelar", "+ Novo Endereço"),
+                                                    on_click=AuthState.toggle_add_address_form,
+                                                    color_scheme="purple",
+                                                    size="2",
+                                                    variant="soft",
+                                                ),
+                                                width="100%",
+                                                justify="between",
+                                                align="center",
+                                            ),
+                                            rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                                            rx.cond(
+                                                AuthState.address_message != "",
+                                                rx.text(AuthState.address_message, color="#4ade80", font_size="13px"),
+                                                rx.fragment(),
+                                            ),
+                                            rx.cond(
+                                                AuthState.is_adding_address,
+                                                rx.vstack(
+                                                    rx.heading("Cadastrar Novo Endereço", size="4", color="#f5f3ff"),
+                                                    rx.grid(
+                                                        rx.vstack(
+                                                            rx.text("Título (ex: Casa, Trabalho)", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=AuthState.new_address_title,
+                                                                on_change=AuthState.set_new_address_title,
+                                                                placeholder="Casa",
+                                                                width="100%",
+                                                                height="40px",
+                                                                background="#11111a",
+                                                                border="1px solid rgba(167, 139, 250, 0.24)",
+                                                                border_radius="8px",
+                                                                color="#f5f3ff",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        rx.vstack(
+                                                            rx.text("CEP", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=AuthState.new_address_cep,
+                                                                on_change=AuthState.set_new_address_cep,
+                                                                placeholder="00000-000",
+                                                                width="100%",
+                                                                height="40px",
+                                                                background="#11111a",
+                                                                border="1px solid rgba(167, 139, 250, 0.24)",
+                                                                border_radius="8px",
+                                                                color="#f5f3ff",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        columns="2",
+                                                        spacing="3",
+                                                        width="100%",
+                                                    ),
+                                                    rx.grid(
+                                                        rx.vstack(
+                                                            rx.text("Logradouro", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=AuthState.new_address_street,
+                                                                on_change=AuthState.set_new_address_street,
+                                                                placeholder="Rua, Avenida...",
+                                                                width="100%",
+                                                                height="40px",
+                                                                background="#11111a",
+                                                                border="1px solid rgba(167, 139, 250, 0.24)",
+                                                                border_radius="8px",
+                                                                color="#f5f3ff",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        rx.vstack(
+                                                            rx.text("Número", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=AuthState.new_address_number,
+                                                                on_change=AuthState.set_new_address_number,
+                                                                placeholder="123",
+                                                                width="100%",
+                                                                height="40px",
+                                                                background="#11111a",
+                                                                border="1px solid rgba(167, 139, 250, 0.24)",
+                                                                border_radius="8px",
+                                                                color="#f5f3ff",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        columns="2",
+                                                        spacing="3",
+                                                        width="100%",
+                                                    ),
+                                                    rx.grid(
+                                                        rx.vstack(
+                                                            rx.text("Complemento", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=AuthState.new_address_complement,
+                                                                on_change=AuthState.set_new_address_complement,
+                                                                placeholder="Apto 42, Bloco B",
+                                                                width="100%",
+                                                                height="40px",
+                                                                background="#11111a",
+                                                                border="1px solid rgba(167, 139, 250, 0.24)",
+                                                                border_radius="8px",
+                                                                color="#f5f3ff",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        rx.vstack(
+                                                            rx.text("Bairro", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=AuthState.new_address_neighborhood,
+                                                                on_change=AuthState.set_new_address_neighborhood,
+                                                                placeholder="Centro",
+                                                                width="100%",
+                                                                height="40px",
+                                                                background="#11111a",
+                                                                border="1px solid rgba(167, 139, 250, 0.24)",
+                                                                border_radius="8px",
+                                                                color="#f5f3ff",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        columns="2",
+                                                        spacing="3",
+                                                        width="100%",
+                                                    ),
+                                                    rx.grid(
+                                                        rx.vstack(
+                                                            rx.text("Cidade", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=AuthState.new_address_city,
+                                                                on_change=AuthState.set_new_address_city,
+                                                                placeholder="São Paulo",
+                                                                width="100%",
+                                                                height="40px",
+                                                                background="#11111a",
+                                                                border="1px solid rgba(167, 139, 250, 0.24)",
+                                                                border_radius="8px",
+                                                                color="#f5f3ff",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        rx.vstack(
+                                                            rx.text("Estado (UF)", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=AuthState.new_address_state,
+                                                                on_change=AuthState.set_new_address_state,
+                                                                placeholder="SP",
+                                                                width="100%",
+                                                                height="40px",
+                                                                background="#11111a",
+                                                                border="1px solid rgba(167, 139, 250, 0.24)",
+                                                                border_radius="8px",
+                                                                color="#f5f3ff",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        columns="2",
+                                                        spacing="3",
+                                                        width="100%",
+                                                    ),
+                                                    rx.button(
+                                                        "Salvar Endereço",
+                                                        on_click=AuthState.add_address,
+                                                        color_scheme="purple",
+                                                        size="2",
+                                                        width="100%",
+                                                        margin_top="8px",
+                                                    ),
+                                                    width="100%",
+                                                    padding="20px",
+                                                    background="#161522",
+                                                    border="1px solid rgba(167, 139, 250, 0.3)",
+                                                    border_radius="16px",
+                                                    spacing="4",
+                                                ),
+                                                rx.fragment(),
+                                            ),
+                                            rx.vstack(
+                                                rx.foreach(AuthState.addresses, address_row),
+                                                width="100%",
+                                                spacing="3",
+                                                margin_top="12px",
+                                            ),
+                                            width="100%",
+                                            spacing="4",
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                        width="100%",
+                        flex="3",
+                        padding="28px",
+                        background="linear-gradient(145deg, rgba(24, 20, 36, 0.96), rgba(15, 14, 22, 0.98))",
+                        border="1px solid rgba(167, 139, 250, 0.18)",
+                        border_radius="24px",
+                    ),
+                    direction="row",
+                    wrap="wrap",
+                    spacing="6",
+                    width="100%",
+                    align="start",
+                ),
+                # Not logged in view
+                rx.vstack(
+                    rx.icon("lock", size=48, color="#a78bfa"),
+                    rx.heading("Acesso Restrito", size="7", color="#f5f3ff"),
+                    rx.text("Você precisa estar logado para acessar seu perfil.", color="#a1a1aa", font_size="14px"),
+                    rx.link(
+                        rx.button("Fazer Login", color_scheme="purple", size="3", font_weight="700"),
+                        href="/login",
+                        text_decoration="none",
+                    ),
+                    width="100%",
+                    align="center",
+                    spacing="4",
+                    padding="60px 24px",
+                    background="linear-gradient(145deg, rgba(24, 20, 36, 0.96), rgba(15, 14, 22, 0.98))",
+                    border="1px solid rgba(167, 139, 250, 0.18)",
+                    border_radius="24px",
+                ),
+            ),
+            width="100%",
+            max_width="1120px",
+            margin_x="auto",
+            padding="28px clamp(20px, 5vw, 64px) 24px",
+            align="stretch",
+        ),
+        min_height="100vh",
+        width="100%",
+        overflow_x="hidden",
+        background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
+    )
 
 app = rx.App()
 app.add_page(index, route="/")
-app.add_page(login_page, route="/login", title="Criar conta | NightFall")
+app.add_page(login_page, route="/login", title="Entrar | NightFall")
+app.add_page(registration_page, route="/cadastro", title="Criar conta | NightFall")
+app.add_page(cart_page, route="/carrinho", title="Carrinho de Compras | NightFall")
+app.add_page(checkout_page, route="/pagamento", title="Pagamento | NightFall")
+app.add_page(profile_page, route="/perfil", title="Meu Perfil | NightFall")

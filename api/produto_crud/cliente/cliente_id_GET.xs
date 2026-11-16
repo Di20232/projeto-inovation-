@@ -1,6 +1,7 @@
 // Get Cliente record
 query "cliente/{cliente_id}" verb=GET {
   api_group = "produtoCRUD"
+  auth = "USER"
 
   input {
     int cliente_id? filters=min:1
@@ -11,10 +12,15 @@ query "cliente/{cliente_id}" verb=GET {
       field_name = "id"
       field_value = $input.cliente_id
     } as $model
-  
+
     precondition ($model != null) {
       error_type = "notfound"
       error = "Not Found"
+    }
+
+    precondition ($model.user_id == $auth.id) {
+      error_type = "accessdenied"
+      error = "Unauthorized access to customer record."
     }
   }
 

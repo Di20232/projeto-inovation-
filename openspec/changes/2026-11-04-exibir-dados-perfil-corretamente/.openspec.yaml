@@ -1,0 +1,4 @@
+schema: 1
+name: exibir-dados-perfil-corretamente
+description: Propagar CPF e Data de Nascimento do cadastro para o AuthState e exibi-los no perfil do usuário
+dependencies: []
