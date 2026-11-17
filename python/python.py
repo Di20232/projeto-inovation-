@@ -8,6 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, TypedDict
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import httpx
 import reflex as rx
@@ -53,6 +54,43 @@ class AddressItem(TypedDict):
     state: str
     cep: str
     is_main: bool
+
+
+def build_asaas_checkout_payload(
+    total: Decimal,
+    external_reference: str,
+    callback_base_url: str,
+    customer_name: str,
+    customer_email: str,
+) -> dict[str, Any]:
+    return {
+        "billingTypes": ["CREDIT_CARD"],
+        "chargeTypes": ["DETACHED"],
+        "minutesToExpire": 60,
+        "externalReference": external_reference,
+        "callback": {
+            "successUrl": f"{callback_base_url}/pagamento?asaas=success",
+            "cancelUrl": f"{callback_base_url}/pagamento?asaas=cancel",
+            "expiredUrl": f"{callback_base_url}/pagamento?asaas=expired",
+        },
+        "items": [
+            {
+                "name": "Pedido NightFall",
+                "description": "Compra realizada na loja NightFall",
+                "quantity": 1,
+                "value": float(total),
+                "imageBase64": (
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBg"
+                    "AAAABQABpfZFQAAAAABJRU5ErkJggg=="
+                ),
+            }
+        ],
+        "customerData": {
+            "name": customer_name,
+            "email": customer_email,
+        },
+    }
+
 
 def parse_catalog_data(data: list[Any]) -> list[Product]:
     if not isinstance(data, list):
@@ -334,10 +372,8 @@ class CatalogState(rx.State):
     shipping_city: str = ""
     shipping_state: str = ""
     payment_method: str = "credit_card"
-    card_number: str = ""
-    card_name: str = ""
-    card_expiry: str = ""
-    card_cvv: str = ""
+    payment_message: str = ""
+    is_processing_payment: bool = False
     order_success: bool = False
     order_id: str = ""
 
@@ -400,27 +436,152 @@ class CatalogState(rx.State):
         self.payment_method = val
 
     @rx.event
-    def set_card_number(self, val: str):
-        self.card_number = val
+    async def finalize_order(self):
+        if self.payment_method != "credit_card":
+            self.order_id = f"#NF-{uuid4().hex[:8].upper()}"
+            self.order_success = True
+            self.cart_items = []
+            return
 
-    @rx.event
-    def set_card_name(self, val: str):
-        self.card_name = val
+        if self.is_processing_payment:
+            return
 
-    @rx.event
-    def set_card_expiry(self, val: str):
-        self.card_expiry = val
+        self.is_processing_payment = True
+        self.payment_message = ""
+        try:
+            auth_state = await self.get_state(AuthState)
+            if not auth_state.is_logged_in:
+                self.payment_message = "Faça login para continuar com o pagamento."
+                return rx.redirect("/login")
 
-    @rx.event
-    def set_card_cvv(self, val: str):
-        self.card_cvv = val
+            if not self.cart_items:
+                self.payment_message = "Seu carrinho está vazio."
+                return
 
-    @rx.event
-    def finalize_order(self):
-        import random
-        self.order_id = f"#NF-{random.randint(10000, 99999)}"
-        self.order_success = True
-        self.cart_items = []
+            api_key = os.getenv("ASAAS_API_KEY", "").strip()
+            if not api_key:
+                self.payment_message = (
+                    "Configure a chave da API Sandbox em ASAAS_API_KEY para continuar."
+                )
+                return
+            if not api_key.startswith("$aact_hmlg_"):
+                self.payment_message = (
+                    "Use uma chave do Asaas Sandbox (iniciada por $aact_hmlg_)."
+                )
+                return
+
+            callback_base_url = os.getenv(
+                "ASAAS_CALLBACK_BASE_URL", "http://localhost:3000"
+            ).strip().rstrip("/")
+            try:
+                callback_url = urlparse(callback_base_url)
+            except ValueError:
+                callback_url = None
+            if (
+                callback_url is None
+                or callback_url.scheme not in {"http", "https"}
+                or not callback_url.netloc
+            ):
+                self.payment_message = (
+                    "Configure uma URL válida em ASAAS_CALLBACK_BASE_URL."
+                )
+                return
+
+            customer_name = auth_state.user_name.strip()
+            customer_email = auth_state.user_email.strip().lower()
+            if not customer_name or "@" not in customer_email:
+                self.payment_message = (
+                    "Complete seu nome e e-mail no cadastro antes de pagar."
+                )
+                return
+
+            total = Decimal(str(self.cart_final_total)).quantize(Decimal("0.01"))
+            if total <= 0:
+                self.payment_message = "O total do pedido precisa ser maior que zero."
+                return
+
+            external_reference = f"NF-{uuid4().hex}"
+            payload = build_asaas_checkout_payload(
+                total=total,
+                external_reference=external_reference,
+                callback_base_url=callback_base_url,
+                customer_name=customer_name,
+                customer_email=customer_email,
+            )
+            headers = {
+                "access_token": api_key,
+                "Content-Type": "application/json",
+                "User-Agent": "NightFall/1.0",
+            }
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                response = await client.post(
+                    "https://api-sandbox.asaas.com/v3/checkouts",
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+                checkout = response.json()
+        except httpx.TimeoutException:
+            self.payment_message = (
+                "O Asaas demorou para responder. Verifique o Sandbox antes de tentar novamente."
+            )
+        except httpx.HTTPStatusError as error:
+            details = ""
+            try:
+                body = error.response.json()
+            except ValueError:
+                body = {}
+            if isinstance(body, dict):
+                errors = body.get("errors")
+                if (
+                    isinstance(errors, list)
+                    and errors
+                    and isinstance(errors[0], dict)
+                ):
+                    description = errors[0].get("description")
+                    if isinstance(description, str) and description.strip():
+                        details = f" {description.strip()}"
+            self.payment_message = (
+                f"O Asaas recusou a criação do checkout (HTTP "
+                f"{error.response.status_code}).{details}"
+            )
+        except httpx.RequestError:
+            self.payment_message = (
+                "Não foi possível conectar ao Asaas Sandbox. Tente novamente."
+            )
+        except ValueError:
+            self.payment_message = "O Asaas retornou uma resposta inválida."
+        else:
+            if not isinstance(checkout, dict):
+                self.payment_message = "O Asaas retornou uma resposta inválida."
+                return
+
+            checkout_link = checkout.get("link")
+            if not isinstance(checkout_link, str):
+                self.payment_message = (
+                    "O Asaas não retornou o link para concluir o pagamento."
+                )
+                return
+
+            parsed_link = urlparse(checkout_link)
+            if (
+                parsed_link.scheme != "https"
+                or parsed_link.hostname != "sandbox.asaas.com"
+                or not parsed_link.path.startswith("/checkoutSession/")
+            ):
+                self.payment_message = (
+                    "O Asaas retornou um link de checkout inválido."
+                )
+                return
+
+            self.order_id = external_reference
+            self.payment_message = (
+                "Checkout criado. O pagamento ainda precisa ser concluído e "
+                "confirmado no Asaas."
+            )
+            return rx.redirect(checkout_link)
+        finally:
+            self.is_processing_payment = False
 
     @rx.event
     def clear_filters(self):
@@ -2825,78 +2986,12 @@ def checkout_page() -> rx.Component:
                         rx.cond(
                             CatalogState.payment_method == "credit_card",
                             rx.vstack(
-                                rx.vstack(
-                                    rx.text("Número do Cartão", color="#e4e4e7", font_size="13px", font_weight="600"),
-                                    rx.input(
-                                        placeholder="0000 0000 0000 0000",
-                                        value=CatalogState.card_number,
-                                        on_change=CatalogState.set_card_number,
-                                        width="100%",
-                                        height="42px",
-                                        background="#11111a",
-                                        border="1px solid rgba(167, 139, 250, 0.24)",
-                                        border_radius="10px",
-                                        color="#f5f3ff",
-                                    ),
-                                    width="100%",
-                                    spacing="2",
-                                    align="start",
-                                ),
-                                rx.vstack(
-                                    rx.text("Nome no Cartão", color="#e4e4e7", font_size="13px", font_weight="600"),
-                                    rx.input(
-                                        placeholder="Nome como impresso no cartão",
-                                        value=CatalogState.card_name,
-                                        on_change=CatalogState.set_card_name,
-                                        width="100%",
-                                        height="42px",
-                                        background="#11111a",
-                                        border="1px solid rgba(167, 139, 250, 0.24)",
-                                        border_radius="10px",
-                                        color="#f5f3ff",
-                                    ),
-                                    width="100%",
-                                    spacing="2",
-                                    align="start",
-                                ),
-                                rx.flex(
-                                    rx.vstack(
-                                        rx.text("Validade", color="#e4e4e7", font_size="13px", font_weight="600"),
-                                        rx.input(
-                                            placeholder="MM/AA",
-                                            value=CatalogState.card_expiry,
-                                            on_change=CatalogState.set_card_expiry,
-                                            width="100%",
-                                            height="42px",
-                                            background="#11111a",
-                                            border="1px solid rgba(167, 139, 250, 0.24)",
-                                            border_radius="10px",
-                                            color="#f5f3ff",
-                                        ),
-                                        width="100%",
-                                        flex="1",
-                                        spacing="2",
-                                        align="start",
-                                    ),
-                                    rx.vstack(
-                                        rx.text("CVV", color="#e4e4e7", font_size="13px", font_weight="600"),
-                                        rx.input(
-                                            placeholder="123",
-                                            value=CatalogState.card_cvv,
-                                            on_change=CatalogState.set_card_cvv,
-                                            width="100%",
-                                            height="42px",
-                                            background="#11111a",
-                                            border="1px solid rgba(167, 139, 250, 0.24)",
-                                            border_radius="10px",
-                                            color="#f5f3ff",
-                                        ),
-                                        width="120px",
-                                        spacing="2",
-                                        align="start",
-                                    ),
-                                    spacing="4",
-                                    width="100%",
+                                rx.text(
+                                    "O pagamento será concluído em uma página segura do "
+                                    "Asaas. Os dados do cartão não passam pelo NightFall.",
+                                    color="#a1a1aa",
+                                    font_size="13px",
+                                    text_align="center",
                                 ),
                                 width="100%",
                                 spacing="3",
@@ -2983,13 +3078,28 @@ def checkout_page() -> rx.Component:
                             justify="between",
                         ),
                         rx.button(
-                            "Confirmar Pedido",
+                            rx.cond(
+                                CatalogState.payment_method == "credit_card",
+                                "Ir para pagamento seguro",
+                                "Confirmar Pedido",
+                            ),
                             on_click=CatalogState.finalize_order,
                             color_scheme="purple",
                             size="3",
                             width="100%",
                             font_weight="700",
                             margin_top="16px",
+                            disabled=CatalogState.is_processing_payment,
+                        ),
+                        rx.cond(
+                            CatalogState.payment_message != "",
+                            rx.text(
+                                CatalogState.payment_message,
+                                color="#a1a1aa",
+                                font_size="13px",
+                                text_align="center",
+                            ),
+                            rx.fragment(),
                         ),
                         width="100%",
                         flex="1",
