@@ -261,6 +261,7 @@ class CatalogState(rx.State):
     new_product_category: str = "Processadores"
     new_product_brand: str = ""
     new_product_description: str = ""
+    new_product_image_url: str = ""
     admin_message: str = ""
 
     @rx.event
@@ -284,12 +285,17 @@ class CatalogState(rx.State):
         self.new_product_description = val
 
     @rx.event
+    def set_new_product_image_url(self, val: str):
+        self.new_product_image_url = val
+
+    @rx.event
     def add_product(self):
         name = self.new_product_name.strip()
         price_str = self.new_product_price.strip().replace(",", ".")
         category = self.new_product_category.strip()
         brand = self.new_product_brand.strip()
         description = self.new_product_description.strip()
+        image_url = self.new_product_image_url.strip()
 
         if not name or not price_str or not category:
             self.admin_message = "Preencha nome, preço e categoria."
@@ -310,7 +316,7 @@ class CatalogState(rx.State):
 
         new_prod: Product = {
             "name": name,
-            "image_url": "",
+            "image_url": image_url if image_url else "",
             "source_url": "",
             "price": price,
             "price_display": f"R$ {formatted_price}",
@@ -324,6 +330,7 @@ class CatalogState(rx.State):
         self.new_product_price = ""
         self.new_product_brand = ""
         self.new_product_description = ""
+        self.new_product_image_url = ""
 
     @rx.event
     def delete_product(self, product_name: str):
@@ -3777,6 +3784,16 @@ def profile_page() -> rx.Component:
                                                             on_change=CatalogState.set_new_product_description,
                                                             placeholder="Descrição detalhada...",
                                                             width="100%", height="80px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff"
+                                                        ),
+                                                        width="100%", spacing="2", align="start",
+                                                    ),
+                                                    rx.vstack(
+                                                        rx.text("URL da Foto do Produto", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                        rx.input(
+                                                            value=CatalogState.new_product_image_url,
+                                                            on_change=CatalogState.set_new_product_image_url,
+                                                            placeholder="https://exemplo.com/imagem.png",
+                                                            width="100%", height="40px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff"
                                                         ),
                                                         width="100%", spacing="2", align="start",
                                                     ),
