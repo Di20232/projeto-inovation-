@@ -256,6 +256,110 @@ class CatalogState(rx.State):
     coupon_message: str = ""
     coupon_applied: bool = False
 
+    new_product_name: str = ""
+    new_product_price: str = ""
+    new_product_category: str = "Processadores"
+    new_product_brand: str = ""
+    new_product_description: str = ""
+    admin_message: str = ""
+
+    @rx.event
+    def set_new_product_name(self, val: str):
+        self.new_product_name = val
+
+    @rx.event
+    def set_new_product_price(self, val: str):
+        self.new_product_price = val
+
+    @rx.event
+    def set_new_product_category(self, val: str):
+        self.new_product_category = val
+
+    @rx.event
+    def set_new_product_brand(self, val: str):
+        self.new_product_brand = val
+
+    @rx.event
+    def set_new_product_description(self, val: str):
+        self.new_product_description = val
+
+    @rx.event
+    def add_product(self):
+        name = self.new_product_name.strip()
+        price_str = self.new_product_price.strip().replace(",", ".")
+        category = self.new_product_category.strip()
+        brand = self.new_product_brand.strip()
+        description = self.new_product_description.strip()
+
+        if not name or not price_str or not category:
+            self.admin_message = "Preencha nome, preço e categoria."
+            return
+
+        try:
+            price = float(price_str)
+        except ValueError:
+            self.admin_message = "Preço inválido."
+            return
+
+        specs = []
+        if brand:
+            specs.append({"label": "Marca", "value": brand})
+
+        formatted_price = f"{Decimal(str(price)):,.2f}"
+        formatted_price = formatted_price.replace(",", "X").replace(".", ",").replace("X", ".")
+
+        new_prod: Product = {
+            "name": name,
+            "image_url": "",
+            "source_url": "",
+            "price": price,
+            "price_display": f"R$ {formatted_price}",
+            "description": description,
+            "category": category,
+            "specifications": specs,
+        }
+        self.products.append(new_prod)
+        self.admin_message = f"Produto '{name}' adicionado com sucesso!"
+        self.new_product_name = ""
+        self.new_product_price = ""
+        self.new_product_brand = ""
+        self.new_product_description = ""
+
+    @rx.event
+    def delete_product(self, product_name: str):
+        self.products = [p for p in self.products if p["name"] != product_name]
+        self.admin_message = f"Produto '{product_name}' excluído."
+
+    @rx.event
+    def update_product(self, product_name: str, field: str, value: str):
+        for p in self.products:
+            if p["name"] == product_name:
+                if field == "name":
+                    p["name"] = value
+                elif field == "price":
+                    try:
+                        price = float(value.replace(",", "."))
+                        p["price"] = price
+                        formatted = f"{Decimal(str(price)):,.2f}"
+                        formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+                        p["price_display"] = f"R$ {formatted}"
+                    except ValueError:
+                        pass
+                elif field == "category":
+                    p["category"] = value
+                elif field == "description":
+                    p["description"] = value
+                elif field == "brand":
+                    brand_found = False
+                    for spec in p["specifications"]:
+                        if spec["label"].lower() == "marca":
+                            spec["value"] = value
+                            brand_found = True
+                    if not brand_found:
+                        p["specifications"].append({"label": "Marca", "value": value})
+        self.products = list(self.products)
+        self.admin_message = "Produto atualizado."
+
     @rx.event
     def set_coupon_code(self, code: str):
         self.coupon_code = code
@@ -551,6 +655,7 @@ class CatalogState(rx.State):
 
 class AuthState(rx.State):
     is_logged_in: bool = False
+    is_admin: bool = False
     user_name: str = ""
     user_email: str = ""
     user_phone: str = "(11) 98888-7777"
@@ -785,6 +890,10 @@ class LoginState(rx.State):
                 # Atualiza o estado de autenticação global e redireciona
                 auth_state = await self.get_state(AuthState)
                 auth_state.is_logged_in = True
+                if email == "admin@admin.com" and password == "admin123":
+                    auth_state.is_admin = True
+                else:
+                    auth_state.is_admin = False
                 auth_state.user_email = email
                 name_part = email.split("@")[0]
                 auth_state.user_name = name_part.capitalize()
@@ -3056,6 +3165,36 @@ def checkout_page() -> rx.Component:
         background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
     )
 
+def admin_product_row(prod: rx.Var[Product]) -> rx.Component:
+    return rx.hstack(
+        rx.vstack(
+            rx.text(prod["name"], color="#f5f3ff", font_weight="600", font_size="14px"),
+            rx.hstack(
+                rx.text(prod["category"], color="#a1a1aa", font_size="12px"),
+                rx.text("•", color="#a1a1aa", font_size="12px"),
+                rx.text(prod["price_display"], color="#c4b5fd", font_size="12px", font_weight="600"),
+                spacing="2",
+            ),
+            spacing="1",
+            align="start",
+        ),
+        rx.spacer(),
+        rx.button(
+            "Excluir",
+            on_click=CatalogState.delete_product(prod["name"]),
+            color_scheme="red",
+            size="1",
+            variant="soft",
+        ),
+        width="100%",
+        padding="12px",
+        background="#11111a",
+        border="1px solid rgba(167, 139, 250, 0.12)",
+        border_radius="10px",
+        align="center",
+        justify="between",
+    )
+
 def address_row(addr: rx.Var[AddressItem]) -> rx.Component:
     return rx.hstack(
         rx.vstack(
@@ -3197,6 +3336,18 @@ def profile_page() -> rx.Component:
                             color_scheme="purple",
                             width="100%",
                             justify_content="start",
+                        ),
+                        rx.cond(
+                            AuthState.is_admin,
+                            rx.button(
+                                "Gerenciar Site",
+                                on_click=AuthState.set_profile_tab("admin"),
+                                variant=rx.cond(AuthState.profile_tab == "admin", "solid", "soft"),
+                                color_scheme="ruby",
+                                width="100%",
+                                justify_content="start",
+                            ),
+                            rx.fragment(),
                         ),
                         width="100%",
                         flex="1",
@@ -3559,6 +3710,93 @@ def profile_page() -> rx.Component:
                                             ),
                                             width="100%",
                                             spacing="4",
+                                        ),
+                                        rx.cond(
+                                            AuthState.profile_tab == "admin",
+                                            rx.vstack(
+                                                rx.heading("Painel Administrativo - Gerenciar Site", size="6", color="#f5f3ff"),
+                                                rx.text("Adicione novos produtos ou gerencie o catálogo da loja.", color="#a1a1aa", font_size="14px"),
+                                                rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                                                rx.cond(
+                                                    CatalogState.admin_message != "",
+                                                    rx.text(CatalogState.admin_message, color="#4ade80", font_size="13px"),
+                                                    rx.fragment(),
+                                                ),
+                                                rx.vstack(
+                                                    rx.heading("Adicionar Novo Produto", size="4", color="#e9d5ff"),
+                                                    rx.grid(
+                                                        rx.vstack(
+                                                            rx.text("Nome do Produto", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=CatalogState.new_product_name,
+                                                                on_change=CatalogState.set_new_product_name,
+                                                                placeholder="Ex: Placa de Vídeo RTX 4080",
+                                                                width="100%", height="40px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff"
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        rx.vstack(
+                                                            rx.text("Preço (R$)", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=CatalogState.new_product_price,
+                                                                on_change=CatalogState.set_new_product_price,
+                                                                placeholder="Ex: 5499.90",
+                                                                width="100%", height="40px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff"
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        columns="2", spacing="3", width="100%",
+                                                    ),
+                                                    rx.grid(
+                                                        rx.vstack(
+                                                            rx.text("Categoria", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=CatalogState.new_product_category,
+                                                                on_change=CatalogState.set_new_product_category,
+                                                                placeholder="Processadores, Placas de Vídeo...",
+                                                                width="100%", height="40px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff"
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        rx.vstack(
+                                                            rx.text("Marca", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=CatalogState.new_product_brand,
+                                                                on_change=CatalogState.set_new_product_brand,
+                                                                placeholder="NVIDIA, AMD...",
+                                                                width="100%", height="40px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff"
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        columns="2", spacing="3", width="100%",
+                                                    ),
+                                                    rx.vstack(
+                                                        rx.text("Descrição", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                        rx.text_area(
+                                                            value=CatalogState.new_product_description,
+                                                            on_change=CatalogState.set_new_product_description,
+                                                            placeholder="Descrição detalhada...",
+                                                            width="100%", height="80px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff"
+                                                        ),
+                                                        width="100%", spacing="2", align="start",
+                                                    ),
+                                                    rx.button(
+                                                        "Cadastrar Produto",
+                                                        on_click=CatalogState.add_product,
+                                                        color_scheme="purple",
+                                                        size="2",
+                                                        width="100%",
+                                                    ),
+                                                    width="100%", padding="20px", background="#161522", border="1px solid rgba(167, 139, 250, 0.3)", border_radius="16px", spacing="4",
+                                                ),
+                                                rx.heading("Produtos no Catálogo", size="4", color="#e9d5ff", margin_top="16px"),
+                                                rx.vstack(
+                                                    rx.foreach(CatalogState.products, admin_product_row),
+                                                    width="100%", spacing="2", max_height="400px", overflow_y="auto",
+                                                ),
+                                                width="100%", spacing="4",
+                                            ),
+                                            rx.fragment(),
                                         ),
                                     ),
                                 ),
