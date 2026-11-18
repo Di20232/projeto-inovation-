@@ -3447,7 +3447,11 @@ def profile_page() -> rx.Component:
                                                 lambda order: rx.hstack(
                                                     rx.vstack(
                                                         rx.text(order["id"], color="#f5f3ff", font_weight="700", font_size="15px"),
-                                                        rx.text("Data: " + order["date"] + " • " + order["items_count"].to_string() + " item(ns)", color="#a1a1aa", font_size="13px"),
+                                                        rx.text(
+                                                            "Data: " + order["date"].to_string() + " • " + order["items_count"].to_string() + " item(ns)",
+                                                            color="#a1a1aa",
+                                                            font_size="13px"
+                                                        ),
                                                         spacing="1",
                                                         align="start",
                                                     ),
