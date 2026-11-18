@@ -1,0 +1,42 @@
+---
+name: user-profile-data-sync
+description: "Fetch and display all user profile data from backend (Xano) on profile page"
+metadata:
+  type: user
+---
+This change addresses the issue where the user profile page is not displaying any registered user data from the backend (Xano). The system should fetch and display ALL user information (name, email, CPF, birth date, phone) during profile load, rather than showing placeholder or empty data.
+
+## Requirements
+- Integrate with Xano API to fetch complete user profile data during profile initialization
+- Ensure all data fields are properly formatted and validated:
+  - CPF using existing `format_cpf` utility
+  - Birth date in correct format (YYYY-MM-DD)
+  - Phone number formatting
+  - Name and email display
+- Handle cases where user data is not yet available or incomplete in Xano
+- Update `AuthState` to properly manage all user profile fields
+- Ensure UI displays all profile data correctly with proper formatting
+- Handle loading states during data fetch
+
+## Key Components to Modify:
+1. **AuthState** (`python/python.py`):
+   - Add `fetch_user_profile()` method to call Xano `/user` or `/me` endpoint
+   - Store all user fields: `user_name`, `user_email`, `user_cpf`, `user_birth_date`, `user_phone`
+   - Trigger fetch on profile page load or when `is_logged_in` becomes true
+
+2. **Profile Page Component** (`profile_page()`):
+   - Display loading state while fetching data
+   - Pre-populate all input fields with fetched data
+   - Show formatted CPF, birth date, phone
+
+3. **Xano Integration**:
+   - Define expected API endpoint (likely `/api:nightfall-auth/user/me` or similar)
+   - Handle authentication token/session for the request
+   - Parse and validate response data
+
+4. **Data Validation & Formatting**:
+   - Reuse existing `format_cpf()` for CPF display
+   - Ensure birth date matches `type="date"` input format
+   - Phone number masking/formatting
+
+## Priority: High (critical for user profile functionality)

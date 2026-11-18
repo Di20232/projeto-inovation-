@@ -415,11 +415,53 @@ class CatalogState(rx.State):
     def set_card_cvv(self, val: str):
         self.card_cvv = val
 
+    orders: list[dict] = []
+
     @rx.event
-    def finalize_order(self):
+    async def finalize_order(self):
         import random
+        from datetime import datetime
         self.order_id = f"#NF-{random.randint(10000, 99999)}"
         self.order_success = True
+
+        order_data = {
+            "id": self.order_id,
+            "date": datetime.now().strftime("%d/%m/%Y"),
+            "items": list(self.cart_items),
+            "subtotal": self.cart_total,
+            "discount": self.discount_amount,
+            "shipping": self.shipping_cost,
+            "total": self.cart_final_total,
+            "total_display": self.cart_final_total_display,
+            "status": "Concluído",
+            "shipping_address": {
+                "cep": self.shipping_cep,
+                "address": self.shipping_address,
+                "number": self.shipping_number,
+                "complement": self.shipping_complement,
+                "neighborhood": self.shipping_neighborhood,
+                "city": self.shipping_city,
+                "state": self.shipping_state,
+            },
+            "payment_method": self.payment_method,
+        }
+
+        # Tenta salvar no Xano orders ou usa persistência local robusta com orders_db.json
+        from order_persistence import send_order_to_xano
+        send_order_to_xano(order_data)
+
+        # Registra o pedido no AuthState do usuário logado
+        auth_state = await self.get_state(AuthState)
+        if auth_state.is_logged_in:
+            new_order = {
+                "id": self.order_id,
+                "date": order_data["date"],
+                "items_count": sum(item["quantity"] for item in self.cart_items),
+                "total_display": self.cart_final_total_display,
+                "status": "Concluído",
+            }
+            auth_state.orders = list(auth_state.orders) + [new_order]
+
         self.cart_items = []
 
     @rx.event
@@ -549,6 +591,95 @@ class CatalogState(rx.State):
                         brands.append(brand)
         return sorted(brands)
 
+class AdminState(rx.State):
+    admin_tab: str = "produtos"
+    admin_message: str = ""
+
+    # New product form fields
+    new_prod_name: str = ""
+    new_prod_category: str = "Componentes"
+    new_prod_price: str = ""
+    new_prod_description: str = ""
+    new_prod_image_url: str = ""
+    new_prod_brand: str = ""
+
+    @rx.event
+    def set_admin_tab(self, tab: str):
+        self.admin_tab = tab
+        self.admin_message = ""
+
+    @rx.event
+    def set_new_prod_name(self, val: str):
+        self.new_prod_name = val
+
+    @rx.event
+    def set_new_prod_category(self, val: str):
+        self.new_prod_category = val
+
+    @rx.event
+    def set_new_prod_price(self, val: str):
+        self.new_prod_price = val
+
+    @rx.event
+    def set_new_prod_description(self, val: str):
+        self.new_prod_description = val
+
+    @rx.event
+    def set_new_prod_image_url(self, val: str):
+        self.new_prod_image_url = val
+
+    @rx.event
+    def set_new_prod_brand(self, val: str):
+        self.new_prod_brand = val
+
+    @rx.event
+    async def add_product(self):
+        name = self.new_prod_name.strip()
+        cat = self.new_prod_category.strip()
+        price_str = self.new_prod_price.strip().replace(",", ".")
+        desc = self.new_prod_description.strip()
+        img = self.new_prod_image_url.strip() or "https://images.unsplash.com/photo-1587202372775-e229f172b9d7?auto=format&fit=crop&w=600&q=80"
+        brand = self.new_prod_brand.strip() or "NightFall"
+
+        if not name or not price_str or not desc:
+            self.admin_message = "Preencha nome, preço e descrição do produto."
+            return
+
+        try:
+            price = float(price_str)
+        except ValueError:
+            self.admin_message = "Preço inválido. Digite um número válido."
+            return
+
+        formatted_price = f"{Decimal(str(price)):,.2f}"
+        formatted_price = formatted_price.replace(",", "X").replace(".", ",").replace("X", ".")
+
+        catalog_state = await self.get_state(CatalogState)
+        new_item: Product = {
+            "name": name,
+            "image_url": img,
+            "source_url": "https://nightfall.com.br",
+            "price": price,
+            "price_display": f"R$ {formatted_price}",
+            "description": desc,
+            "category": cat,
+            "specifications": [{"label": "Marca", "value": brand}] if brand else []
+        }
+        catalog_state.products = list(catalog_state.products) + [new_item]
+        self.admin_message = f"Produto '{name}' cadastrado com sucesso!"
+        self.new_prod_name = ""
+        self.new_prod_price = ""
+        self.new_prod_description = ""
+        self.new_prod_image_url = ""
+        self.new_prod_brand = ""
+
+    @rx.event
+    async def delete_catalog_product(self, product_name: str):
+        catalog_state = await self.get_state(CatalogState)
+        catalog_state.products = [p for p in catalog_state.products if p["name"] != product_name]
+        self.admin_message = f"Produto '{product_name}' removido do catálogo."
+
+
 class AuthState(rx.State):
     is_logged_in: bool = False
     user_name: str = ""
@@ -560,6 +691,8 @@ class AuthState(rx.State):
     profile_tab: str = "dados"
     redirect_after_login: str = ""
     logout_dialog_open: bool = False
+    orders: list[dict] = []
+    warranties: list[dict] = []
 
     addresses: list[AddressItem] = [
         {
@@ -3306,30 +3439,37 @@ def profile_page() -> rx.Component:
                                     rx.heading("Meus Pedidos", size="6", color="#f5f3ff"),
                                     rx.text("Acompanhe o histórico e status das suas compras recentes.", color="#a1a1aa", font_size="14px"),
                                     rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
-                                    rx.vstack(
-                                        rx.hstack(
-                                            rx.vstack(
-                                                rx.text("Pedido #NF-84920", color="#f5f3ff", font_weight="700", font_size="15px"),
-                                                rx.text("Data: 26/10/2026 • 1 item", color="#a1a1aa", font_size="13px"),
-                                                spacing="1",
-                                                align="start",
-                                            ),
-                                            rx.vstack(
-                                                rx.text("R$ 2.609,91", color="#e9d5ff", font_weight="700", font_size="15px"),
-                                                rx.badge("Concluído", color_scheme="green", variant="solid", size="1"),
-                                                spacing="1",
-                                                align="end",
+                                    rx.cond(
+                                        AuthState.orders.length() > 0,
+                                        rx.vstack(
+                                            rx.foreach(
+                                                AuthState.orders,
+                                                lambda order: rx.hstack(
+                                                    rx.vstack(
+                                                        rx.text(order["id"], color="#f5f3ff", font_weight="700", font_size="15px"),
+                                                        rx.text("Data: " + order["date"] + " • " + order["items_count"].to_string() + " item(ns)", color="#a1a1aa", font_size="13px"),
+                                                        spacing="1",
+                                                        align="start",
+                                                    ),
+                                                    rx.vstack(
+                                                        rx.text(order["total_display"], color="#e9d5ff", font_weight="700", font_size="15px"),
+                                                        rx.badge(order["status"], color_scheme="green", variant="solid", size="1"),
+                                                        spacing="1",
+                                                        align="end",
+                                                    ),
+                                                    width="100%",
+                                                    justify="between",
+                                                    align="center",
+                                                    padding="16px",
+                                                    background="#11111a",
+                                                    border="1px solid rgba(167, 139, 250, 0.2)",
+                                                    border_radius="12px",
+                                                ),
                                             ),
                                             width="100%",
-                                            justify="between",
-                                            align="center",
-                                            padding="16px",
-                                            background="#11111a",
-                                            border="1px solid rgba(167, 139, 250, 0.2)",
-                                            border_radius="12px",
+                                            spacing="3",
                                         ),
-                                        width="100%",
-                                        spacing="3",
+                                        rx.text("Você ainda não realizou nenhum pedido na NightFall.", color="#a1a1aa", font_size="14px", padding_y="16px"),
                                     ),
                                     width="100%",
                                     spacing="4",
@@ -3340,26 +3480,7 @@ def profile_page() -> rx.Component:
                                         rx.heading("Garantia de Produtos", size="6", color="#f5f3ff"),
                                         rx.text("Consulte a vigência e termos de garantia dos seus hardwares.", color="#a1a1aa", font_size="14px"),
                                         rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
-                                        rx.vstack(
-                                            rx.hstack(
-                                                rx.vstack(
-                                                    rx.text("Processador AMD Ryzen 7 7800X3D", color="#f5f3ff", font_weight="700", font_size="15px"),
-                                                    rx.text("Garantia de Fábrica: 3 Anos (Válida até Out/2029)", color="#4ade80", font_size="13px"),
-                                                    spacing="1",
-                                                    align="start",
-                                                ),
-                                                rx.badge("Ativa", color_scheme="purple", variant="solid", size="1"),
-                                                width="100%",
-                                                justify="between",
-                                                align="center",
-                                                padding="16px",
-                                                background="#11111a",
-                                                border="1px solid rgba(167, 139, 250, 0.2)",
-                                                border_radius="12px",
-                                            ),
-                                            width="100%",
-                                            spacing="3",
-                                        ),
+                                        rx.text("Nenhum produto cadastrado com garantia ativa no momento. Os hardwares adquiridos em pedidos concluídos aparecerão aqui.", color="#a1a1aa", font_size="14px", padding_y="16px"),
                                         width="100%",
                                         spacing="4",
                                     ),
@@ -3608,6 +3729,330 @@ def profile_page() -> rx.Component:
         background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
     )
 
+def admin_page() -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            # Header
+            rx.hstack(
+                rx.link(
+                    "← Voltar à Loja",
+                    href="/",
+                    color="#c4b5fd",
+                    font_size="14px",
+                    font_weight="600",
+                    text_decoration="none",
+                    _hover={"color": "#f5f3ff"},
+                ),
+                rx.hstack(
+                    rx.box(
+                        rx.text(
+                            "N",
+                            color="#f5f3ff",
+                            font_size="18px",
+                            font_weight="800",
+                            text_align="center",
+                            line_height="40px",
+                        ),
+                        width="40px",
+                        height="40px",
+                        background="linear-gradient(145deg, #a78bfa, #6d28d9)",
+                        border="1px solid rgba(196, 181, 253, 0.35)",
+                        border_radius="12px",
+                        box_shadow="0 8px 28px rgba(139, 92, 246, 0.25)",
+                    ),
+                    rx.heading(
+                        "NightFall Painel Administrativo",
+                        size="5",
+                        color="#f5f3ff",
+                        letter_spacing="-0.04em",
+                    ),
+                    spacing="3",
+                    align="center",
+                ),
+                width="100%",
+                justify="between",
+                align="center",
+                padding_bottom="24px",
+                border_bottom="1px solid rgba(167, 139, 250, 0.16)",
+            ),
+            # Content / Admin Layout
+            rx.flex(
+                # Left Navigation
+                rx.vstack(
+                    rx.heading("Gestão", size="4", color="#f5f3ff", margin_bottom="8px"),
+                    rx.button(
+                        "Produtos",
+                        on_click=AdminState.set_admin_tab("produtos"),
+                        variant=rx.cond(AdminState.admin_tab == "produtos", "solid", "soft"),
+                        color_scheme="purple",
+                        width="100%",
+                        justify_content="start",
+                    ),
+                    rx.button(
+                        "Adicionar Produto",
+                        on_click=AdminState.set_admin_tab("adicionar_produto"),
+                        variant=rx.cond(AdminState.admin_tab == "adicionar_produto", "solid", "soft"),
+                        color_scheme="purple",
+                        width="100%",
+                        justify_content="start",
+                    ),
+                    rx.button(
+                        "Pedidos",
+                        on_click=AdminState.set_admin_tab("pedidos"),
+                        variant=rx.cond(AdminState.admin_tab == "pedidos", "solid", "soft"),
+                        color_scheme="purple",
+                        width="100%",
+                        justify_content="start",
+                    ),
+                    rx.button(
+                        "Clientes",
+                        on_click=AdminState.set_admin_tab("clientes"),
+                        variant=rx.cond(AdminState.admin_tab == "clientes", "solid", "soft"),
+                        color_scheme="purple",
+                        width="100%",
+                        justify_content="start",
+                    ),
+                    width="100%",
+                    flex="1",
+                    min_width="240px",
+                    padding="20px",
+                    background="linear-gradient(145deg, rgba(24, 20, 36, 0.96), rgba(15, 14, 22, 0.98))",
+                    border="1px solid rgba(167, 139, 250, 0.18)",
+                    border_radius="20px",
+                    spacing="3",
+                ),
+                # Right Content Area
+                rx.box(
+                    rx.cond(
+                        AdminState.admin_tab == "produtos",
+                        rx.vstack(
+                            rx.heading("Gerenciar Produtos do Catálogo", size="6", color="#f5f3ff"),
+                            rx.text("Lista de produtos ativos na loja. Você pode remover ou consultar.", color="#a1a1aa", font_size="14px"),
+                            rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                            rx.cond(
+                                AdminState.admin_message != "",
+                                rx.text(AdminState.admin_message, color="#4ade80", font_size="13px"),
+                                rx.fragment(),
+                            ),
+                            rx.vstack(
+                                rx.foreach(
+                                    CatalogState.products,
+                                    lambda prod: rx.hstack(
+                                        rx.image(src=prod["image_url"], width="48px", height="48px", object_fit="contain", background="#0b0b12", border_radius="8px"),
+                                        rx.vstack(
+                                            rx.text(prod["name"], color="#f5f3ff", font_weight="700", font_size="14px"),
+                                            rx.text(prod["category"] + " • " + prod["price_display"], color="#a78bfa", font_size="13px"),
+                                            spacing="1",
+                                            align="start",
+                                        ),
+                                        rx.button(
+                                            "Remover",
+                                            on_click=AdminState.delete_catalog_product(prod["name"]),
+                                            size="1",
+                                            variant="soft",
+                                            color_scheme="red",
+                                        ),
+                                        width="100%",
+                                        justify="between",
+                                        align="center",
+                                        padding="12px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.2)",
+                                        border_radius="10px",
+                                    ),
+                                ),
+                                width="100%",
+                                spacing="3",
+                            ),
+                            width="100%",
+                            spacing="4",
+                        ),
+                        rx.cond(
+                            AdminState.admin_tab == "adicionar_produto",
+                            rx.vstack(
+                                rx.heading("Cadastrar Novo Produto", size="6", color="#f5f3ff"),
+                                rx.text("Adicione um novo hardware ou periférico ao catálogo do e-commerce.", color="#a1a1aa", font_size="14px"),
+                                rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                                rx.cond(
+                                    AdminState.admin_message != "",
+                                    rx.text(AdminState.admin_message, color="#4ade80", font_size="13px"),
+                                    rx.fragment(),
+                                ),
+                                rx.vstack(
+                                    rx.text("Nome do Produto", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AdminState.new_prod_name,
+                                        on_change=AdminState.set_new_prod_name,
+                                        placeholder="Ex: Placa de Vídeo RTX 4070",
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%", spacing="2", align="start",
+                                ),
+                                rx.vstack(
+                                    rx.text("Categoria", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AdminState.new_prod_category,
+                                        on_change=AdminState.set_new_prod_category,
+                                        placeholder="Computadores, Componentes, Periféricos ou Acessórios",
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%", spacing="2", align="start",
+                                ),
+                                rx.vstack(
+                                    rx.text("Preço (R$)", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AdminState.new_prod_price,
+                                        on_change=AdminState.set_new_prod_price,
+                                        placeholder="3499.90",
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%", spacing="2", align="start",
+                                ),
+                                rx.vstack(
+                                    rx.text("URL da Imagem", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AdminState.new_prod_image_url,
+                                        on_change=AdminState.set_new_prod_image_url,
+                                        placeholder="https://exemplo.com/imagem.png",
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%", spacing="2", align="start",
+                                ),
+                                rx.vstack(
+                                    rx.text("Marca", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AdminState.new_prod_brand,
+                                        on_change=AdminState.set_new_prod_brand,
+                                        placeholder="Ex: NVIDIA",
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%", spacing="2", align="start",
+                                ),
+                                rx.vstack(
+                                    rx.text("Descrição", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AdminState.new_prod_description,
+                                        on_change=AdminState.set_new_prod_description,
+                                        placeholder="Descrição detalhada do hardware...",
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%", spacing="2", align="start",
+                                ),
+                                rx.button(
+                                    "Cadastrar Produto no Catálogo",
+                                    on_click=AdminState.add_product,
+                                    color_scheme="purple",
+                                    size="3",
+                                    width="100%",
+                                    font_weight="700",
+                                    margin_top="8px",
+                                ),
+                                width="100%",
+                                spacing="4",
+                            ),
+                            rx.cond(
+                                AdminState.admin_tab == "pedidos",
+                                rx.vstack(
+                                    rx.heading("Gerenciamento de Pedidos", size="6", color="#f5f3ff"),
+                                    rx.text("Lista de pedidos realizados por clientes na plataforma.", color="#a1a1aa", font_size="14px"),
+                                    rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                                    rx.vstack(
+                                        rx.hstack(
+                                            rx.vstack(
+                                                rx.text("Pedido #NF-84920", color="#f5f3ff", font_weight="700", font_size="15px"),
+                                                rx.text("Cliente: Diego Souza • Data: 26/10/2026", color="#a1a1aa", font_size="13px"),
+                                                spacing="1", align="start",
+                                            ),
+                                            rx.vstack(
+                                                rx.text("R$ 2.609,91", color="#e9d5ff", font_weight="700", font_size="15px"),
+                                                rx.badge("Concluído", color_scheme="green", variant="solid", size="1"),
+                                                spacing="1", align="end",
+                                            ),
+                                            width="100%", justify="between", align="center",
+                                            padding="16px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.2)", border_radius="12px",
+                                        ),
+                                        width="100%", spacing="3",
+                                    ),
+                                    width="100%", spacing="4",
+                                ),
+                                rx.vstack(
+                                    rx.heading("Clientes Cadastrados", size="6", color="#f5f3ff"),
+                                    rx.text("Base de clientes registrados na plataforma NightFall.", color="#a1a1aa", font_size="14px"),
+                                    rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                                    rx.vstack(
+                                        rx.hstack(
+                                            rx.vstack(
+                                                rx.text("Diego Souza", color="#f5f3ff", font_weight="700", font_size="15px"),
+                                                rx.text("diegossouza2007@gmail.com • (11) 98888-7777", color="#a1a1aa", font_size="13px"),
+                                                spacing="1", align="start",
+                                            ),
+                                            rx.badge("Ativo", color_scheme="purple", variant="solid", size="1"),
+                                            width="100%", justify="between", align="center",
+                                            padding="16px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.2)", border_radius="12px",
+                                        ),
+                                        width="100%", spacing="3",
+                                    ),
+                                    width="100%", spacing="4",
+                                ),
+                            ),
+                        ),
+                    ),
+                    width="100%",
+                    flex="3",
+                    padding="28px",
+                    background="linear-gradient(145deg, rgba(24, 20, 36, 0.96), rgba(15, 14, 22, 0.98))",
+                    border="1px solid rgba(167, 139, 250, 0.18)",
+                    border_radius="24px",
+                ),
+                direction="row",
+                wrap="wrap",
+                spacing="6",
+                width="100%",
+                align="start",
+            ),
+            width="100%",
+            max_width="1120px",
+            margin_x="auto",
+            padding="28px clamp(20px, 5vw, 64px) 24px",
+            align="stretch",
+        ),
+        min_height="100vh",
+        width="100%",
+        overflow_x="hidden",
+        background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
+    )
+
+
 app = rx.App()
 app.add_page(index, route="/")
 app.add_page(login_page, route="/login", title="Entrar | NightFall")
@@ -3615,3 +4060,4 @@ app.add_page(registration_page, route="/cadastro", title="Criar conta | NightFal
 app.add_page(cart_page, route="/carrinho", title="Carrinho de Compras | NightFall")
 app.add_page(checkout_page, route="/pagamento", title="Pagamento | NightFall")
 app.add_page(profile_page, route="/perfil", title="Meu Perfil | NightFall")
+app.add_page(admin_page, route="/admin", title="Painel Administrativo | NightFall")
