@@ -1,0 +1,44 @@
+[
+  {
+    "user_email": "teste.user@exemplo.com",
+    "total": 2609.91,
+    "status": "pending"
+  },
+  {
+    "id": "#NF-58410",
+    "date": "17/11/2026 21:42:47",
+    "user_email": "diego.cliente@exemplo.com",
+    "items": [
+      {
+        "name": "Processador AMD Ryzen 7 7800X3D",
+        "price": 2899.9,
+        "quantity": 1
+      },
+      {
+        "name": "Placa Mãe ASUS ROG Strix B650",
+        "price": 1499.9,
+        "quantity": 1
+      },
+      {
+        "name": "Memória RAM Corsair Vengeance 32GB (2x16) DDR5",
+        "price": 799.9,
+        "quantity": 1
+      }
+    ],
+    "subtotal": 5199.7,
+    "discount": 519.97,
+    "shipping": 0.0,
+    "total": 4679.73,
+    "total_display": "R$ 4.679,73",
+    "shipping_address": {
+      "cep": "01001-000",
+      "address": "Praça da Sé",
+      "number": "100",
+      "neighborhood": "Sé",
+      "city": "São Paulo",
+      "state": "SP"
+    },
+    "payment_method": "credit_card",
+    "status": "Concluído"
+  }
+]
