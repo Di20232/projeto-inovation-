@@ -422,6 +422,56 @@ class CatalogState(rx.State):
         import random
         from datetime import datetime
         self.order_id = f"#NF-{random.randint(10000, 99999)}"
+
+        auth_state = await self.get_state(AuthState)
+
+        # Integração com Asaas (se ASAAS_API_KEY estiver configurada)
+        asaas_key = os.getenv("ASAAS_API_KEY", "").strip()
+        payment_status = "Concluído"
+
+        if asaas_key:
+            from asaas_service import get_or_create_customer, create_payment
+            customer_name = auth_state.user_name if auth_state.is_logged_in else "Cliente NightFall"
+            customer_email = auth_state.user_email if auth_state.is_logged_in else "cliente@nightfall.com.br"
+            customer_cpf = auth_state.user_cpf if auth_state.is_logged_in else "123.456.789-09"
+            customer_phone = auth_state.user_phone if auth_state.is_logged_in else "(11) 98888-7777"
+
+            customer_id = get_or_create_customer(customer_name, customer_email, customer_cpf, customer_phone)
+            if customer_id:
+                billing_type = "PIX" if self.payment_method == "pix" else "CREDIT_CARD"
+                total_val = float(self.cart_final_total)
+                desc = f"Pedido NightFall {self.order_id}"
+
+                card_payload = None
+                if billing_type == "CREDIT_CARD":
+                    expiry_parts = self.card_expiry.split("/")
+                    exp_month = expiry_parts[0].strip() if len(expiry_parts) > 0 else "12"
+                    exp_year = expiry_parts[1].strip() if len(expiry_parts) > 1 else "2028"
+                    if len(exp_year) == 2:
+                        exp_year = f"20{exp_year}"
+
+                    card_payload = {
+                        "holderName": self.card_name,
+                        "number": "".join(filter(str.isdigit, self.card_number)),
+                        "expiryMonth": exp_month,
+                        "expiryYear": exp_year,
+                        "ccv": self.card_cvv,
+                        "holderInfo": {
+                            "name": customer_name,
+                            "email": customer_email,
+                            "cpfCnpj": "".join(filter(str.isdigit, customer_cpf)),
+                            "postalCode": "".join(filter(str.isdigit, self.shipping_cep)),
+                            "addressNumber": self.shipping_number or "100",
+                            "phone": "".join(filter(str.isdigit, customer_phone))
+                        }
+                    }
+
+                asaas_res = create_payment(customer_id, billing_type, total_val, desc, card_payload)
+                if asaas_res.get("success"):
+                    payment_status = "Aguardando Pagamento" if billing_type == "PIX" else "Aprovado"
+                else:
+                    payment_status = "Erro no Gateway Asaas"
+
         self.order_success = True
 
         order_data = {
@@ -433,7 +483,7 @@ class CatalogState(rx.State):
             "shipping": self.shipping_cost,
             "total": self.cart_final_total,
             "total_display": self.cart_final_total_display,
-            "status": "Concluído",
+            "status": payment_status,
             "shipping_address": {
                 "cep": self.shipping_cep,
                 "address": self.shipping_address,
@@ -451,14 +501,13 @@ class CatalogState(rx.State):
         send_order_to_xano(order_data)
 
         # Registra o pedido no AuthState do usuário logado
-        auth_state = await self.get_state(AuthState)
         if auth_state.is_logged_in:
             new_order = {
                 "id": self.order_id,
                 "date": order_data["date"],
                 "items_count": sum(item["quantity"] for item in self.cart_items),
                 "total_display": self.cart_final_total_display,
-                "status": "Concluído",
+                "status": payment_status,
             }
             auth_state.orders = list(auth_state.orders) + [new_order]
 
