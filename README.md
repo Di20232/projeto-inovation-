@@ -51,6 +51,15 @@ Aplicação web full-stack desenvolvida em **Python** utilizando o framework **R
 
 ---
 
+## Integração de Pagamento (Asaas Sandbox)
+
+- Configure `ASAAS_API_KEY` no `.env` com uma chave do Sandbox.
+- A aplicação carrega o `.env` ao iniciar; reinicie o Reflex após alterar a chave.
+- O formulário de cartão cria/usa o cliente e registra uma cobrança de teste no Asaas.
+- Use somente cartões fictícios de teste; o Sandbox não movimenta dinheiro.
+- Os dados do cartão não são salvos pelo NightFall. HTTPS é obrigatório fora do localhost.
+- Pix e boleto ainda não estão integrados.
+
 ## 🧪 Testes Automatizados Locais
 
 Para executar os testes automatizados de rotas:
