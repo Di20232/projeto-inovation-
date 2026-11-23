@@ -143,6 +143,26 @@ def test_formatar_data_nascimento():
     assert format_birth_date("150519") == "15/05/19"
 
 
+def test_endereco_entrega_completo():
+    """Endereço completo não tem pendências (complemento é opcional)."""
+    assert app_module.missing_shipping_fields(
+        "01001-000", "Praça da Sé", "100", "Sé", "São Paulo", "SP"
+    ) == []
+
+
+def test_endereco_entrega_vazio_e_invalido():
+    """Endereço vazio lista todos os campos; CEP curto e UF inválida também contam."""
+    assert app_module.missing_shipping_fields("", "", "", "", "", "") == [
+        "CEP", "Endereço", "Número", "Bairro", "Cidade", "Estado (UF)",
+    ]
+    assert app_module.missing_shipping_fields(
+        "0100-000", "Rua A", "1", "Centro", "Santos", "S1"
+    ) == ["CEP", "Estado (UF)"]
+    assert app_module.missing_shipping_fields(
+        "01001000", "  ", "1", "Centro", "Santos", "sp"
+    ) == ["Endereço"]
+
+
 if __name__ == "__main__":
     import pytest
     pytest.main([__file__, "-v"])

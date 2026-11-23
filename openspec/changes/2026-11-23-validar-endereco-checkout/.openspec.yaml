@@ -1,0 +1,7 @@
+schema: 1
+name: validar-endereco-checkout
+description: Checkout exige endereço de entrega completo antes de confirmar o pedido
+status: completed
+created: 2026-11-23
+dependencies: 
+  - checkout-modo-simulado

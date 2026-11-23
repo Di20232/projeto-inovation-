@@ -101,6 +101,27 @@ def _digits(value: str) -> str:
     return "".join(character for character in value if character.isdigit())
 
 
+def missing_shipping_fields(
+    cep: str, address: str, number: str, neighborhood: str, city: str, state: str
+) -> list[str]:
+    """Campos do endereço de entrega que faltam ou estão inválidos (complemento é opcional)."""
+    missing = []
+    if len(_digits(cep or "")) != 8:
+        missing.append("CEP")
+    for label, value in (
+        ("Endereço", address),
+        ("Número", number),
+        ("Bairro", neighborhood),
+        ("Cidade", city),
+    ):
+        if not (value or "").strip():
+            missing.append(label)
+    uf = (state or "").strip()
+    if len(uf) != 2 or not uf.isalpha():
+        missing.append("Estado (UF)")
+    return missing
+
+
 def normalize_asaas_credit_card_form(
     form_data: dict[str, Any],
 ) -> AsaasCreditCardFormData:
@@ -1023,6 +1044,11 @@ class CatalogState(rx.State):
                 self.payment_message = "Seu carrinho está vazio."
                 return
 
+            shipping_problem = self._shipping_problem()
+            if shipping_problem:
+                self.payment_message = shipping_problem
+                return
+
             api_key = os.getenv("ASAAS_API_KEY", "").strip()
             if not api_key:
                 self.payment_message = (
@@ -1178,6 +1204,20 @@ class CatalogState(rx.State):
         finally:
             self.is_processing_payment = False
 
+    def _shipping_problem(self) -> str:
+        """Mensagem com os campos de entrega que faltam, ou "" se o endereço está completo."""
+        missing = missing_shipping_fields(
+            self.shipping_cep,
+            self.shipping_address,
+            self.shipping_number,
+            self.shipping_neighborhood,
+            self.shipping_city,
+            self.shipping_state,
+        )
+        if not missing:
+            return ""
+        return "Preencha o endereço de entrega: " + ", ".join(missing) + "."
+
     async def _finalize_simulated_order(self):
         """Fecha o pedido sem cobrar ninguém (só desenvolvimento local, sem chave Asaas)."""
         if self.is_processing_payment:
@@ -1191,6 +1231,10 @@ class CatalogState(rx.State):
                 return rx.redirect("/login")
             if not self.cart_items:
                 self.payment_message = "Seu carrinho está vazio."
+                return
+            shipping_problem = self._shipping_problem()
+            if shipping_problem:
+                self.payment_message = shipping_problem
                 return
             origin_host = urlparse(self.router.headers.origin).hostname
             if origin_host not in LOCAL_HOSTNAMES:
