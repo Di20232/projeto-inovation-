@@ -2036,7 +2036,9 @@ def category_item(category: Any) -> rx.Component:
     )
 
 def product_card(product: Any) -> rx.Component:
-    return rx.button(
+    # O card é um contêiner não interativo: o gatilho de detalhes e o botão
+    # "Comprar +" são controles irmãos (nada de botão dentro de botão).
+    details_trigger = rx.button(
         rx.vstack(
             rx.image(
                 src=product["image_url"],
@@ -2076,18 +2078,55 @@ def product_card(product: Any) -> rx.Component:
         ),
         on_click=CatalogState.open_product_details(product["name"]),
         aria_label=f"Ver detalhes de {product['name']}",
+        type="button",
         variant="ghost",
-        width="280px",
-        flex="1 1 280px",
-        max_width="320px",
-        min_height="460px",
-        height="100%",
-        padding="18px",
+        width="100%",
+        flex="1",
+        height="auto",
+        padding="0",
+        margin="0",
         color="#f5f3ff",
         text_align="left",
         white_space="normal",
         align_items="stretch",
         justify_content="flex-start",
+        background="transparent",
+        cursor="pointer",
+        _hover={"background": "transparent"},
+    )
+    # Botão só visual: sem on_click, sem link e sem estado.
+    buy_button = rx.button(
+        "Comprar +",
+        type="button",
+        aria_label=f"Comprar {product['name']}",
+        width="100%",
+        max_width="100%",
+        min_height="44px",
+        padding="10px 16px",
+        color="#ffffff",
+        font_weight="700",
+        font_size="15px",
+        white_space="normal",
+        background="#16a34a",
+        border_radius="12px",
+        cursor="pointer",
+        _hover={"background": "#15803d"},
+        _focus_visible={"outline": "2px solid #86efac", "outline_offset": "2px"},
+    )
+    return rx.box(
+        details_trigger,
+        buy_button,
+        display="flex",
+        flex_direction="column",
+        gap="14px",
+        width="280px",
+        flex="1 1 280px",
+        max_width="320px",
+        min_width="0",
+        min_height="460px",
+        height="100%",
+        padding="18px",
+        color="#f5f3ff",
         background="linear-gradient(145deg, rgba(24, 20, 36, 0.92), rgba(15, 14, 22, 0.96))",
         border="1px solid rgba(167, 139, 250, 0.16)",
         border_radius="24px",
