@@ -1689,6 +1689,20 @@ class LoginState(rx.State):
         self.login_succeeded = False
 
     @rx.event
+    def reset_form(self):
+        """Zera o formulário ao abrir /login: o que aparece vazio fica vazio também no servidor."""
+        self.email = ""
+        self.password = ""
+        self.login_message = ""
+        self.login_succeeded = False
+
+    @rx.event
+    def submit_on_enter(self, key: str):
+        """Enter no e-mail ou na senha envia o login, como o botão "Entrar"."""
+        if key == "Enter" and not self.is_submitting:
+            return LoginState.login
+
+    @rx.event
     async def login(self):
         email = self.email.strip().lower()
         password = self.password
@@ -2824,6 +2838,7 @@ def login_page() -> rx.Component:
                         type="email",
                         value=LoginState.email,
                         on_change=LoginState.set_email,
+                        on_key_down=LoginState.submit_on_enter,
                         placeholder="voce@exemplo.com",
                         aria_label="E-mail",
                         required=True,
@@ -2853,6 +2868,7 @@ def login_page() -> rx.Component:
                         type="password",
                         value=LoginState.password,
                         on_change=LoginState.set_password,
+                        on_key_down=LoginState.submit_on_enter,
                         placeholder="Sua senha",
                         aria_label="Senha",
                         required=True,
@@ -5782,7 +5798,7 @@ def admin_page() -> rx.Component:
 
 app = rx.App()
 app.add_page(index, route="/", on_load=CatalogState.refresh_catalog)
-app.add_page(login_page, route="/login", title="Entrar | NightFall")
+app.add_page(login_page, route="/login", title="Entrar | NightFall", on_load=LoginState.reset_form)
 app.add_page(registration_page, route="/cadastro", title="Criar conta | NightFall")
 app.add_page(cart_page, route="/carrinho", title="Carrinho de Compras | NightFall")
 app.add_page(checkout_page, route="/pagamento", title="Pagamento | NightFall")
