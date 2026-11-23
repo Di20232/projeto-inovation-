@@ -1438,6 +1438,8 @@ class AdminState(rx.State):
 class AuthState(rx.State):
     is_logged_in: bool = False
     is_admin: bool = False
+    # Variável só do backend (prefixo "_"): o token do Xano nunca vai para o navegador.
+    _auth_token: str = ""
     user_name: str = ""
     user_email: str = ""
     user_phone: str = "(11) 98888-7777"
@@ -1633,6 +1635,7 @@ class AuthState(rx.State):
             self.profile_tab = "dados"
         self.user_name = ""
         self.user_email = ""
+        self._auth_token = ""
         self.orders = []
         self.logout_dialog_open = False
         return rx.redirect("/")
@@ -1691,18 +1694,38 @@ class LoginState(rx.State):
         self.login_succeeded = False
         self.is_submitting = True
         try:
-            await asyncio.sleep(0.8)
-            if "@" in email and len(password) >= 6:
+            from admin_auth import XanoUnavailable, check_env_admin, xano_login
+
+            # 1) Admin do .env (hash PBKDF2), verificado no servidor.
+            is_env_admin = await asyncio.to_thread(check_env_admin, email, password)
+            # 2) Xano, se XANO_LOGIN_URL estiver configurada: ele decide login e is_admin.
+            xano_result = None
+            if not is_env_admin:
+                try:
+                    xano_result = await asyncio.to_thread(xano_login, email, password)
+                except XanoUnavailable:
+                    self.login_message = (
+                        "O serviço de login está indisponível. Tente novamente em instantes."
+                    )
+                    return
+
+            if is_env_admin:
+                accepted, is_admin, token = True, True, ""
+            elif xano_result is not None:
+                accepted, is_admin, token = xano_result.ok, xano_result.is_admin, xano_result.token
+            else:
+                # Sem Xano configurado: modo de desenvolvimento, sem privilégio de admin.
+                accepted, is_admin, token = ("@" in email and len(password) >= 6), False, ""
+
+            if accepted:
                 self.login_message = "Login realizado com sucesso!"
                 self.login_succeeded = True
 
                 # Atualiza o estado de autenticação global e redireciona
                 auth_state = await self.get_state(AuthState)
                 auth_state.is_logged_in = True
-                if email == "admin@admin.com" and password == "admin123":
-                    auth_state.is_admin = True
-                else:
-                    auth_state.is_admin = False
+                auth_state.is_admin = is_admin
+                auth_state._auth_token = token
                 auth_state.user_email = email
                 auth_state.orders = []
                 auth_state._refresh_orders()
@@ -1911,6 +1934,11 @@ class RegistrationState(rx.State):
 
                 auth_state = await self.get_state(AuthState)
                 auth_state.is_logged_in = True
+                # Conta recém-criada nunca é admin (mesmo que um admin estivesse logado).
+                auth_state.is_admin = False
+                auth_state._auth_token = ""
+                if auth_state.profile_tab == "admin":
+                    auth_state.profile_tab = "dados"
                 auth_state.user_name = name
                 auth_state.user_email = email
                 auth_state.orders = []

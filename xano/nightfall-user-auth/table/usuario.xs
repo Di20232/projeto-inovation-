@@ -16,6 +16,11 @@ table "usuario" {
       sensitive = true
       visibility = "internal"
     }
+
+    // Privilégio de administrador. Só é alterado direto no Xano (nunca pelo signup).
+    bool is_admin?=false {
+      visibility = "internal"
+    }
   }
 
   index = [
