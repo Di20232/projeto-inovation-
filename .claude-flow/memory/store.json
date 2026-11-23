@@ -332,6 +332,69 @@
       "lastAccessed": "2026-11-04T21:21:51.465Z",
       "accessCount": 0,
       "expiresAt": "2026-12-04T21:21:51.465Z"
+    },
+    "cmd-1793827326478": {
+      "key": "cmd-1793827326478",
+      "value": "{\"command\":\"git add -A\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-04T21:22:06.478Z",
+      "lastAccessed": "2026-11-04T21:22:06.478Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-04T21:22:06.478Z"
+    },
+    "cmd-1793827332815": {
+      "key": "cmd-1793827332815",
+      "value": "{\"command\":\"cat .gitignore 2>/dev/null | head -40; echo \\\"---\\\"; git log --oneline -3\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-04T21:22:12.815Z",
+      "lastAccessed": "2026-11-04T21:22:12.815Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-04T21:22:12.815Z"
+    },
+    "cmd-1793827335972": {
+      "key": "cmd-1793827335972",
+      "value": "{\"command\":\"git status --porcelain | wc -l; echo \\\"---\\\"; git status --porcelain | grep -v -E 'claude-flow|swarm|openspec|reflex'\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-04T21:22:15.972Z",
+      "lastAccessed": "2026-11-04T21:22:15.972Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-04T21:22:15.972Z"
+    },
+    "cmd-1793827345372": {
+      "key": "cmd-1793827345372",
+      "value": "{\"command\":\"git commit -m \\\"Update infra state: openspec archives, claude-flow/swarm memory, reflex.lock\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-04T21:22:25.372Z",
+      "lastAccessed": "2026-11-04T21:22:25.372Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-04T21:22:25.372Z"
+    },
+    "cmd-1794951013177": {
+      "key": "cmd-1794951013177",
+      "value": "{\"command\":\"git status\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-17T21:30:13.177Z",
+      "lastAccessed": "2026-11-17T21:30:13.177Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-17T21:30:13.177Z"
+    },
+    "cmd-1794951082462": {
+      "key": "cmd-1794951082462",
+      "value": "{\"command\":\"git log -n 5 --oneline\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-17T21:31:22.462Z",
+      "lastAccessed": "2026-11-17T21:31:22.462Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-17T21:31:22.462Z"
+    },
+    "cmd-1794951098721": {
+      "key": "cmd-1794951098721",
+      "value": "{\"command\":\".venv\\\\Scripts\\\\python.exe -m pytest\",\"exitCode\":127,\"success\":false}",
+      "namespace": "commands",
+      "storedAt": "2026-11-17T21:31:38.721Z",
+      "lastAccessed": "2026-11-17T21:31:38.721Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-17T21:31:38.721Z"
     }
   },
   "version": "3.0.0"

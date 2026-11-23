@@ -1,0 +1,7 @@
+schema: 1
+name: historico-pedidos-email
+description: Carregar Meus Pedidos do orders_db.json pelo e-mail do cliente
+status: completed
+created: 2026-11-23
+dependencies:
+  - checkout-modo-simulado

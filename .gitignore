@@ -10,3 +10,6 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# Pedidos locais (contém e-mails de clientes)
+orders_db.json

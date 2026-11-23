@@ -1,0 +1,7 @@
+schema: 1
+name: edicao-produto-painel
+description: Editar produtos do catálogo pelo painel administrativo do perfil
+status: completed
+created: 2026-11-23
+dependencies:
+  - aba-admin-perfil-main

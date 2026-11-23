@@ -1,0 +1,7 @@
+schema: 1
+name: ignorar-orders-db
+description: Parar de versionar o orders_db.json, que guarda e-mails de clientes
+status: completed
+created: 2026-11-23
+dependencies:
+  - historico-pedidos-email

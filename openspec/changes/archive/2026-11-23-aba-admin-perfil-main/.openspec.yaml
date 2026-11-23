@@ -1,0 +1,7 @@
+schema: 1
+name: aba-admin-perfil-main
+description: Levar ao main a aba Gerenciar Site do perfil e zerar o admin no logout
+status: completed
+created: 2026-11-23
+dependencies:
+  - painel-administrativo-perfil

@@ -1,0 +1,8 @@
+schema: 1
+name: admin-backend
+description: Checagem de administrador no backend (admin pelo .env com hash e login pelo Xano com is_admin)
+status: in-progress
+created: 2026-11-23
+dependencies:
+  - aba-admin-perfil-main
+  - catalogo-persistente

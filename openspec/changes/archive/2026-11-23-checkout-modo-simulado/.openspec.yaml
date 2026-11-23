@@ -1,0 +1,7 @@
+schema: 1
+name: checkout-modo-simulado
+description: Modo simulado no checkout (sem chave Asaas, só em localhost) e número do pedido visível ao cliente
+status: completed
+created: 2026-11-23
+dependencies:
+  - integracao-pagamento-asaas

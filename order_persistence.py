@@ -22,6 +22,46 @@ def save_order_local(order_data: dict) -> dict:
         json.dump(orders, f, ensure_ascii=False, indent=2)
     return {"success": True, "source": "local_db", "order": order_data}
 
+def load_orders_for_email(email: str, path: Path = ORDERS_FILE) -> list[dict]:
+    """Devolve o histórico de um cliente (mais recente primeiro) no formato de "Meus Pedidos".
+
+    Lê o orders_db.json e filtra pelo e-mail do cliente (sem diferenciar
+    maiúsculas). Pedidos antigos sem `user_email` não são mostrados a ninguém.
+    """
+    email = (email or "").strip().lower()
+    if not email or not path.exists():
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            orders = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(orders, list):
+        return []
+
+    history: list[dict] = []
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        if str(order.get("user_email", "")).strip().lower() != email:
+            continue
+        items = order.get("items") or []
+        items_count = sum(
+            int(item.get("quantity", 1)) for item in items if isinstance(item, dict)
+        )
+        history.append(
+            {
+                "id": str(order.get("id", "")),
+                "date": str(order.get("date", "")),
+                "items_count": items_count,
+                "total_display": str(order.get("total_display", "")),
+                "status": str(order.get("status", "")),
+            }
+        )
+    history.reverse()
+    return history
+
+
 def send_order_to_xano(order_data: dict) -> dict:
     """Tenta enviar o pedido para o Xano. Se falhar, salva localmente."""
     try:

@@ -1,9 +1,12 @@
 """NightFall storefront landing page and auth flow."""
 
 import asyncio
+import copy
 import json
 import math
 import os
+import tempfile
+import threading
 from datetime import date, datetime
 from decimal import Decimal
 from ipaddress import ip_address
@@ -74,6 +77,19 @@ class AsaasCreditCardFormData(TypedDict):
 
 
 ASAAS_API_BASE_URL = "https://api-sandbox.asaas.com/v3"
+LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "::1"}
+
+
+def simulated_payments_enabled() -> bool:
+    """Modo simulado: sem ASAAS_API_KEY, o checkout cria o pedido sem cobrar.
+
+    Serve só para desenvolvimento local. Pode ser desligado com
+    NIGHTFALL_SIMULATED_PAYMENTS=0. O finalize_order ainda exige que o acesso
+    venha de localhost antes de usar este modo.
+    """
+    if os.getenv("ASAAS_API_KEY", "").strip():
+        return False
+    return os.getenv("NIGHTFALL_SIMULATED_PAYMENTS", "1").strip() != "0"
 
 
 def _form_text(form_data: dict[str, Any], field: str) -> str:
@@ -124,7 +140,7 @@ def normalize_asaas_credit_card_form(
     if expiration_date.date().replace(day=1) < current_month:
         raise ValueError("A validade do cartão precisa ser futura.")
 
-    return normalized
+    return dict(normalized) # type: ignore
 
 
 def build_asaas_credit_card_payment_payload(
@@ -251,7 +267,6 @@ def parse_catalog_data(data: list[Any]) -> list[Product]:
     required_fields = {
         "name",
         "image_url",
-        "source_url",
         "price",
         "description",
         "category",
@@ -266,12 +281,20 @@ def parse_catalog_data(data: list[Any]) -> list[Product]:
             missing = ", ".join(sorted(missing_fields))
             raise ValueError(f"Produto {index} sem os campos obrigatórios: {missing}.")
 
-        for field in ("name", "image_url", "source_url", "description", "category"):
+        for field in ("name", "image_url", "description", "category"):
             if not isinstance(item[field], str) or not item[field].strip():
                 raise ValueError(f"Campo '{field}' do produto {index} deve ser texto não vazio.")
 
-        for field in ("image_url", "source_url"):
-            product_url = urlparse(item[field])
+        # source_url é opcional: produtos cadastrados pelo painel não têm loja de origem.
+        source_url = item.get("source_url", "")
+        if not isinstance(source_url, str):
+            raise ValueError(f"Campo 'source_url' do produto {index} deve ser texto.")
+        source_url = source_url.strip()
+
+        for field, url_value in (("image_url", item["image_url"]), ("source_url", source_url)):
+            if field == "source_url" and not url_value:
+                continue
+            product_url = urlparse(url_value)
             if product_url.scheme not in {"http", "https"} or not product_url.netloc:
                 raise ValueError(
                     f"URL do campo '{field}' do produto {index} deve ser HTTP ou HTTPS."
@@ -326,7 +349,7 @@ def parse_catalog_data(data: list[Any]) -> list[Product]:
             {
                 "name": item["name"].strip(),
                 "image_url": item["image_url"].strip(),
-                "source_url": item["source_url"].strip(),
+                "source_url": source_url,
                 "price": price,
                 "price_display": f"R$ {formatted_price}",
                 "description": item["description"].strip(),
@@ -354,8 +377,131 @@ def load_catalog(path: Path = CATALOG_PATH) -> list[Product]:
         data = json.load(catalog_file)
     return parse_catalog_data(data)
 
+
+# --- Persistência do catálogo (painel admin) ---
+# O catálogo vivo do processo fica em _catalog_cache. Toda alteração passa por
+# mutate_catalog, que trabalha sobre o cache (e não sobre a cópia da sessão),
+# valida com parse_catalog_data e grava o catalog.json de forma atômica.
+_CATALOG_LOCK = threading.Lock()
+_catalog_cache: list[Product] = load_catalog()
+
+
+def current_catalog() -> list[Product]:
+    with _CATALOG_LOCK:
+        return copy.deepcopy(_catalog_cache)
+
+
+def _product_to_json(product: Product) -> dict[str, Any]:
+    return {
+        "name": product["name"],
+        "image_url": product["image_url"],
+        "source_url": product.get("source_url", ""),
+        "price": product["price"],
+        "description": product["description"],
+        "category": product["category"],
+        "specifications": [
+            {"label": spec["label"], "value": spec["value"]}
+            for spec in product["specifications"]
+        ],
+    }
+
+
+def _write_catalog_file(data: list[dict[str, Any]], path: Path) -> None:
+    fd, tmp_name = tempfile.mkstemp(prefix=".catalog-", suffix=".json", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as tmp_file:
+            json.dump(data, tmp_file, ensure_ascii=False, indent=2)
+            tmp_file.write("\n")
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def mutate_catalog(change, path: Path = CATALOG_PATH) -> list[Product]:
+    """Aplica `change(produtos) -> produtos` ao catálogo, valida e grava no disco e sincroniza com o Xano."""
+    with _CATALOG_LOCK:
+        updated = change(copy.deepcopy(_catalog_cache))
+        data = [_product_to_json(p) for p in updated]
+        parsed = parse_catalog_data(data)
+        _write_catalog_file(data, path)
+        _catalog_cache[:] = parsed
+
+        # Sincroniza com o Xano (se configurado/disponível)
+        products_url = os.getenv("XANO_PRODUCTS_URL", DEFAULT_XANO_PRODUCTS_URL).strip()
+        if products_url:
+            try:
+                # O Xano geralmente recebe o catálogo completo ou via POST/PUT por item.
+                # Como o Xano aceita lista ou POST individual, tentamos enviar cada produto ou o array completo.
+                for item in data:
+                    httpx.post(products_url, json=item, timeout=3.0)
+            except Exception:
+                pass
+
+        return copy.deepcopy(parsed)
+
+
+def build_product(
+    *,
+    name: str,
+    price_text: str,
+    category: str,
+    brand: str,
+    description: str,
+    image_url: str,
+    source_url: str = "",
+    other_specs: list[Specification] | None = None,
+) -> Product:
+    """Monta um produto a partir do formulário do painel. Lança ValueError se inválido."""
+    name = name.strip()
+    category = category.strip()
+    description = description.strip()
+    image_url = image_url.strip()
+    brand = brand.strip()
+    price_text = price_text.strip().replace(",", ".")
+
+    if not name:
+        raise ValueError("Informe o nome do produto.")
+    if not price_text:
+        raise ValueError("Informe o preço.")
+    try:
+        price = float(price_text)
+    except ValueError:
+        raise ValueError("Preço inválido. Use números, ex.: 5499.90") from None
+    if not math.isfinite(price) or price < 0:
+        raise ValueError("O preço deve ser um número não negativo.")
+    if category not in CATEGORIES:
+        raise ValueError(f"Escolha uma categoria: {', '.join(CATEGORIES)}.")
+    if not description:
+        raise ValueError("Informe a descrição do produto.")
+    url = urlparse(image_url)
+    if url.scheme not in {"http", "https"} or not url.netloc:
+        raise ValueError("Informe a URL da foto, começando com http:// ou https://.")
+
+    specs: list[Specification] = [
+        s for s in (other_specs or []) if s["label"].lower() != "marca"
+    ]
+    if brand:
+        specs.insert(0, {"label": "Marca", "value": brand})
+
+    formatted = f"{Decimal(str(price)):,.2f}"
+    formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+    return {
+        "name": name,
+        "image_url": image_url,
+        "source_url": source_url.strip(),
+        "price": price,
+        "price_display": f"R$ {formatted}",
+        "description": description,
+        "category": category,
+        "specifications": specs,
+    }
+
 class CatalogState(rx.State):
-    products: list[Product] = load_catalog()
+    products: list[Product] = current_catalog()
     selected_category: str = "Todos"
     search_query: str = ""
     category_menu_open: bool = False
@@ -380,6 +526,7 @@ class CatalogState(rx.State):
 
     @rx.event
     def add_to_cart(self, product_name: str):
+        self.last_order_id = ""
         product = next(
             (item for item in self.products if item["name"] == product_name),
             None,
@@ -444,6 +591,210 @@ class CatalogState(rx.State):
     discount_amount: float = 0.0
     coupon_message: str = ""
     coupon_applied: bool = False
+
+    new_product_name: str = ""
+    new_product_price: str = ""
+    new_product_category: str = "Componentes"
+    new_product_brand: str = ""
+    new_product_description: str = ""
+    new_product_image_url: str = ""
+    admin_message: str = ""
+
+    @rx.event
+    def set_new_product_name(self, val: str):
+        self.new_product_name = val
+
+    @rx.event
+    def set_new_product_price(self, val: str):
+        self.new_product_price = val
+
+    @rx.event
+    def set_new_product_category(self, val: str):
+        self.new_product_category = val
+
+    @rx.event
+    def set_new_product_brand(self, val: str):
+        self.new_product_brand = val
+
+    @rx.event
+    def set_new_product_description(self, val: str):
+        self.new_product_description = val
+
+    @rx.event
+    def set_new_product_image_url(self, val: str):
+        self.new_product_image_url = val
+
+    admin_error: bool = False
+
+    async def _is_admin(self) -> bool:
+        auth = await self.get_state(AuthState)
+        return bool(auth.is_logged_in and auth.is_admin)
+
+    def _admin_feedback(self, message: str, error: bool = False):
+        self.admin_message = message
+        self.admin_error = error
+
+    @rx.event
+    def refresh_catalog(self):
+        """Recarrega o catálogo salvo (usado no on_load das páginas)."""
+        self.products = current_catalog()
+
+    @rx.event
+    async def add_product(self):
+        if not await self._is_admin():
+            self._admin_feedback("Apenas administradores podem alterar o catálogo.", True)
+            return
+        try:
+            new_prod = build_product(
+                name=self.new_product_name,
+                price_text=self.new_product_price,
+                category=self.new_product_category,
+                brand=self.new_product_brand,
+                description=self.new_product_description,
+                image_url=self.new_product_image_url,
+            )
+
+            def change(products: list[Product]) -> list[Product]:
+                if any(p["name"] == new_prod["name"] for p in products):
+                    raise ValueError(f"Já existe um produto chamado '{new_prod['name']}'.")
+                return products + [new_prod]
+
+            self.products = mutate_catalog(change)
+        except ValueError as exc:
+            self._admin_feedback(str(exc), True)
+            return
+        except OSError:
+            self._admin_feedback("Não foi possível gravar o catalog.json.", True)
+            return
+        self._admin_feedback(f"Produto '{new_prod['name']}' adicionado e salvo no catálogo!")
+        self.new_product_name = ""
+        self.new_product_price = ""
+        self.new_product_brand = ""
+        self.new_product_description = ""
+        self.new_product_image_url = ""
+
+    @rx.event
+    async def delete_product(self, product_name: str):
+        if not await self._is_admin():
+            self._admin_feedback("Apenas administradores podem alterar o catálogo.", True)
+            return
+        try:
+            self.products = mutate_catalog(
+                lambda products: [p for p in products if p["name"] != product_name]
+            )
+        except (ValueError, OSError):
+            self._admin_feedback("Não foi possível gravar o catalog.json.", True)
+            return
+        self._admin_feedback(f"Produto '{product_name}' excluído do catálogo.")
+
+    # --- Edição de produto (painel admin) ---
+    edit_dialog_open: bool = False
+    edit_original_name: str = ""
+    edit_name: str = ""
+    edit_price: str = ""
+    edit_category: str = ""
+    edit_brand: str = ""
+    edit_description: str = ""
+    edit_image_url: str = ""
+    edit_error: str = ""
+
+    @rx.event
+    def set_edit_name(self, val: str):
+        self.edit_name = val
+
+    @rx.event
+    def set_edit_price(self, val: str):
+        self.edit_price = val
+
+    @rx.event
+    def set_edit_category(self, val: str):
+        self.edit_category = val
+
+    @rx.event
+    def set_edit_brand(self, val: str):
+        self.edit_brand = val
+
+    @rx.event
+    def set_edit_description(self, val: str):
+        self.edit_description = val
+
+    @rx.event
+    def set_edit_image_url(self, val: str):
+        self.edit_image_url = val
+
+    @rx.event
+    def set_edit_dialog_open(self, is_open: bool):
+        self.edit_dialog_open = is_open
+        if not is_open:
+            self.edit_error = ""
+
+    @rx.event
+    def open_edit_product(self, product_name: str):
+        product = next((p for p in self.products if p["name"] == product_name), None)
+        if product is None:
+            self.admin_message = f"Produto '{product_name}' não encontrado."
+            return
+        brand = next(
+            (s["value"] for s in product["specifications"] if s["label"].lower() == "marca"),
+            "",
+        )
+        self.edit_original_name = product["name"]
+        self.edit_name = product["name"]
+        self.edit_price = f"{float(product['price']):.2f}"
+        self.edit_category = product["category"]
+        self.edit_brand = brand
+        self.edit_description = product["description"]
+        self.edit_image_url = product["image_url"]
+        self.edit_error = ""
+        self.edit_dialog_open = True
+
+    @rx.event
+    async def save_edited_product(self):
+        if not await self._is_admin():
+            self.edit_error = "Apenas administradores podem alterar o catálogo."
+            return
+        original = self.edit_original_name
+
+        def change(products: list[Product]) -> list[Product]:
+            current = next((p for p in products if p["name"] == original), None)
+            if current is None:
+                raise ValueError(f"Produto '{original}' não encontrado.")
+            edited = build_product(
+                name=self.edit_name,
+                price_text=self.edit_price,
+                category=self.edit_category,
+                brand=self.edit_brand,
+                description=self.edit_description,
+                image_url=self.edit_image_url,
+                source_url=current.get("source_url", ""),
+                other_specs=current["specifications"],
+            )
+            if edited["name"] != original and any(p["name"] == edited["name"] for p in products):
+                raise ValueError(f"Já existe um produto chamado '{edited['name']}'.")
+            return [edited if p["name"] == original else p for p in products]
+
+        try:
+            self.products = mutate_catalog(change)
+        except ValueError as exc:
+            self.edit_error = str(exc)
+            return
+        except OSError:
+            self.edit_error = "Não foi possível gravar o catalog.json."
+            return
+
+        saved = next(p for p in self.products if p["name"] == self.edit_name.strip())
+        # Mantém o carrinho coerente com o produto editado
+        for item in self.cart_items:
+            if item["name"] == original:
+                item["name"] = saved["name"]
+                item["price"] = saved["price"]
+                item["price_display"] = saved["price_display"]
+                item["image_url"] = saved["image_url"]
+        self.cart_items = list(self.cart_items)
+
+        self.edit_dialog_open = False
+        self.edit_error = ""
+        self._admin_feedback(f"Produto '{saved['name']}' atualizado e salvo no catálogo!")
 
     @rx.event
     def set_coupon_code(self, code: str):
@@ -526,6 +877,67 @@ class CatalogState(rx.State):
     payment_message: str = ""
     is_processing_payment: bool = False
     payment_reference: str = ""
+    payments_simulated: bool = simulated_payments_enabled()
+    last_order_id: str = ""
+    last_order_total_display: str = ""
+    last_order_status: str = ""
+
+    def _register_order(
+        self,
+        auth_state: "AuthState",
+        *,
+        status_text: str,
+        payment_id: str,
+    ) -> str:
+        """Grava o pedido (Xano ou orders_db.json), põe no histórico do cliente e limpa o carrinho.
+
+        Devolve o número do pedido mostrado ao cliente.
+        """
+        order_id = f"#NF-{self.payment_reference.removeprefix('NF-')[:8].upper()}"
+        order_data = {
+            "id": order_id,
+            "date": datetime.now().strftime("%d/%m/%Y"),
+            "user_email": auth_state.user_email,
+            "items": list(self.cart_items),
+            "subtotal": self.cart_total,
+            "discount": self.discount_amount,
+            "shipping": self.shipping_cost,
+            "total": self.cart_final_total,
+            "total_display": self.cart_final_total_display,
+            "status": status_text,
+            "payment_method": self.payment_method,
+            "asaas_payment_id": payment_id,
+        }
+        from order_persistence import send_order_to_xano
+
+        send_order_to_xano(order_data)
+        # Mais recente primeiro, igual ao histórico carregado do orders_db.json.
+        auth_state.orders = [
+            {
+                "id": order_id,
+                "date": order_data["date"],
+                "items_count": sum(item["quantity"] for item in self.cart_items),
+                "total_display": self.cart_final_total_display,
+                "status": status_text,
+            }
+        ] + list(auth_state.orders)
+        self.last_order_id = order_id
+        self.last_order_total_display = self.cart_final_total_display
+        self.last_order_status = status_text
+        self.payment_reference = ""
+        self.cart_items = []
+        return order_id
+
+    @rx.event
+    def clear_last_order(self):
+        self.last_order_id = ""
+
+    @rx.event
+    async def go_to_my_orders(self):
+        auth_state = await self.get_state(AuthState)
+        auth_state.profile_tab = "pedidos"
+        self.last_order_id = ""
+        return rx.redirect("/perfil")
 
     @rx.event
     async def proceed_to_checkout(self):
@@ -588,6 +1000,9 @@ class CatalogState(rx.State):
 
     @rx.event
     async def finalize_order(self, form_data: dict[str, Any]):
+        if simulated_payments_enabled():
+            return await self._finalize_simulated_order()
+
         if self.payment_method != "credit_card":
             self.payment_message = "Pix e boleto ainda não estão integrados ao Asaas."
             return
@@ -752,38 +1167,51 @@ class CatalogState(rx.State):
             status_text = status if isinstance(status, str) else "Não informado"
 
             # Registra o pedido no histórico do usuário e na persistência local/Xano.
-            order_id = f"#NF-{self.payment_reference.removeprefix('NF-')[:8].upper()}"
-            order_data = {
-                "id": order_id,
-                "date": datetime.now().strftime("%d/%m/%Y"),
-                "items": list(self.cart_items),
-                "subtotal": self.cart_total,
-                "discount": self.discount_amount,
-                "shipping": self.shipping_cost,
-                "total": self.cart_final_total,
-                "total_display": self.cart_final_total_display,
-                "status": status_text,
-                "payment_method": self.payment_method,
-                "asaas_payment_id": payment["id"],
-            }
-            from order_persistence import send_order_to_xano
-
-            send_order_to_xano(order_data)
-            auth_state.orders = list(auth_state.orders) + [
-                {
-                    "id": order_id,
-                    "date": order_data["date"],
-                    "items_count": sum(item["quantity"] for item in self.cart_items),
-                    "total_display": self.cart_final_total_display,
-                    "status": status_text,
-                }
-            ]
-
-            self.payment_reference = ""
-            self.cart_items = []
+            order_id = self._register_order(
+                auth_state, status_text=status_text, payment_id=payment["id"]
+            )
             return rx.toast.success(
-                "Cobrança registrada no Asaas Sandbox",
-                description=f"ID: {payment['id']} · Status: {status_text}",
+                f"Pedido {order_id} realizado!",
+                description=f"Cobrança Asaas: {payment['id']} · Status: {status_text}",
+                duration=10000,
+            )
+        finally:
+            self.is_processing_payment = False
+
+    async def _finalize_simulated_order(self):
+        """Fecha o pedido sem cobrar ninguém (só desenvolvimento local, sem chave Asaas)."""
+        if self.is_processing_payment:
+            return
+        self.is_processing_payment = True
+        self.payment_message = ""
+        try:
+            auth_state = await self.get_state(AuthState)
+            if not auth_state.is_logged_in:
+                self.payment_message = "Faça login para continuar com o pedido."
+                return rx.redirect("/login")
+            if not self.cart_items:
+                self.payment_message = "Seu carrinho está vazio."
+                return
+            origin_host = urlparse(self.router.headers.origin).hostname
+            if origin_host not in LOCAL_HOSTNAMES:
+                self.payment_message = (
+                    "Pagamento indisponível: configure ASAAS_API_KEY. "
+                    "O modo simulado só funciona em localhost."
+                )
+                return
+            if Decimal(str(self.cart_final_total)) <= 0:
+                self.payment_message = "O total do pedido precisa ser maior que zero."
+                return
+
+            self.payment_reference = f"NF-{uuid4().hex}"
+            order_id = self._register_order(
+                auth_state,
+                status_text="Simulado (sem cobrança)",
+                payment_id="SIMULADO",
+            )
+            return rx.toast.success(
+                f"Pedido {order_id} realizado!",
+                description="Modo simulado: nenhum pagamento foi processado.",
                 duration=10000,
             )
         finally:
@@ -966,32 +1394,33 @@ class AdminState(rx.State):
         img = self.new_prod_image_url.strip() or "https://images.unsplash.com/photo-1587202372775-e229f172b9d7?auto=format&fit=crop&w=600&q=80"
         brand = self.new_prod_brand.strip() or "NightFall"
 
-        if not name or not price_str or not desc:
-            self.admin_message = "Preencha nome, preço e descrição do produto."
-            return
-
-        try:
-            price = float(price_str)
-        except ValueError:
-            self.admin_message = "Preço inválido. Digite um número válido."
-            return
-
-        formatted_price = f"{Decimal(str(price)):,.2f}"
-        formatted_price = formatted_price.replace(",", "X").replace(".", ",").replace("X", ".")
-
         catalog_state = await self.get_state(CatalogState)
-        new_item: Product = {
-            "name": name,
-            "image_url": img,
-            "source_url": "https://nightfall.com.br",
-            "price": price,
-            "price_display": f"R$ {formatted_price}",
-            "description": desc,
-            "category": cat,
-            "specifications": [{"label": "Marca", "value": brand}] if brand else []
-        }
-        catalog_state.products = list(catalog_state.products) + [new_item]
-        self.admin_message = f"Produto '{name}' cadastrado com sucesso!"
+        if not await catalog_state._is_admin():
+            self.admin_message = "Apenas administradores podem alterar o catálogo."
+            return
+        try:
+            new_item = build_product(
+                name=name,
+                price_text=price_str,
+                category=cat,
+                brand=brand,
+                description=desc,
+                image_url=img,
+            )
+
+            def change(products: list[Product]) -> list[Product]:
+                if any(p["name"] == new_item["name"] for p in products):
+                    raise ValueError(f"Já existe um produto chamado '{new_item['name']}'.")
+                return products + [new_item]
+
+            catalog_state.products = mutate_catalog(change)
+        except ValueError as exc:
+            self.admin_message = str(exc)
+            return
+        except OSError:
+            self.admin_message = "Não foi possível gravar o catalog.json."
+            return
+        self.admin_message = f"Produto '{name}' cadastrado e salvo no catálogo!"
         self.new_prod_name = ""
         self.new_prod_price = ""
         self.new_prod_description = ""
@@ -1001,12 +1430,24 @@ class AdminState(rx.State):
     @rx.event
     async def delete_catalog_product(self, product_name: str):
         catalog_state = await self.get_state(CatalogState)
-        catalog_state.products = [p for p in catalog_state.products if p["name"] != product_name]
+        if not await catalog_state._is_admin():
+            self.admin_message = "Apenas administradores podem alterar o catálogo."
+            return
+        try:
+            catalog_state.products = mutate_catalog(
+                lambda products: [p for p in products if p["name"] != product_name]
+            )
+        except (ValueError, OSError):
+            self.admin_message = "Não foi possível gravar o catalog.json."
+            return
         self.admin_message = f"Produto '{product_name}' removido do catálogo."
 
 
 class AuthState(rx.State):
     is_logged_in: bool = False
+    is_admin: bool = False
+    # Variável só do backend (prefixo "_"): o token do Xano nunca vai para o navegador.
+    _auth_token: str = ""
     user_name: str = ""
     user_email: str = ""
     user_phone: str = "(11) 98888-7777"
@@ -1197,10 +1638,36 @@ class AuthState(rx.State):
     @rx.event
     def confirm_logout(self):
         self.is_logged_in = False
+        self.is_admin = False
+        if self.profile_tab == "admin":
+            self.profile_tab = "dados"
         self.user_name = ""
         self.user_email = ""
+        self._auth_token = ""
+        self.orders = []
         self.logout_dialog_open = False
         return rx.redirect("/")
+
+    @rx.event
+    def load_my_orders(self):
+        """Evento (on_load do /perfil) que recarrega "Meus Pedidos"."""
+        self._refresh_orders()
+
+    def _refresh_orders(self):
+        """Carrega "Meus Pedidos" do orders_db.json pelo e-mail do cliente logado.
+
+        Pedidos que estão só na sessão (por exemplo, aceitos pelo Xano e não
+        gravados no arquivo local) continuam na lista.
+        """
+        if not self.is_logged_in or not self.user_email:
+            self.orders = []
+            return
+        from order_persistence import load_orders_for_email
+
+        saved = load_orders_for_email(self.user_email)
+        saved_ids = {order["id"] for order in saved}
+        session_only = [o for o in self.orders if o.get("id") not in saved_ids]
+        self.orders = session_only + saved
 
 class LoginState(rx.State):
     email: str = ""
@@ -1235,15 +1702,44 @@ class LoginState(rx.State):
         self.login_succeeded = False
         self.is_submitting = True
         try:
-            await asyncio.sleep(0.8)
-            if "@" in email and len(password) >= 6:
+            from admin_auth import XanoUnavailable, check_env_admin, is_env_admin_email, xano_login
+
+            # 1) Admin do .env (hash PBKDF2), verificado no servidor.
+            is_env_admin = await asyncio.to_thread(check_env_admin, email, password)
+            # 2) Xano, se XANO_LOGIN_URL estiver configurada: ele decide login e is_admin.
+            xano_result = None
+            if not is_env_admin:
+                try:
+                    xano_result = await asyncio.to_thread(xano_login, email, password)
+                except XanoUnavailable:
+                    self.login_message = (
+                        "O serviço de login está indisponível. Tente novamente em instantes."
+                    )
+                    return
+
+            if is_env_admin:
+                accepted, is_admin, token = True, True, ""
+            elif xano_result is None and is_env_admin_email(email):
+                # E-mail do admin com senha errada: recusa, em vez de entrar calado como cliente.
+                accepted, is_admin, token = False, False, ""
+            elif xano_result is not None:
+                accepted, is_admin, token = xano_result.ok, xano_result.is_admin, xano_result.token
+            else:
+                # Sem Xano configurado: modo de desenvolvimento, sem privilégio de admin.
+                accepted, is_admin, token = ("@" in email and len(password) >= 6), False, ""
+
+            if accepted:
                 self.login_message = "Login realizado com sucesso!"
                 self.login_succeeded = True
 
                 # Atualiza o estado de autenticação global e redireciona
                 auth_state = await self.get_state(AuthState)
                 auth_state.is_logged_in = True
+                auth_state.is_admin = is_admin
+                auth_state._auth_token = token
                 auth_state.user_email = email
+                auth_state.orders = []
+                auth_state._refresh_orders()
                 name_part = email.split("@")[0]
                 auth_state.user_name = name_part.capitalize()
                 if not auth_state.user_cpf:
@@ -1449,8 +1945,15 @@ class RegistrationState(rx.State):
 
                 auth_state = await self.get_state(AuthState)
                 auth_state.is_logged_in = True
+                # Conta recém-criada nunca é admin (mesmo que um admin estivesse logado).
+                auth_state.is_admin = False
+                auth_state._auth_token = ""
+                if auth_state.profile_tab == "admin":
+                    auth_state.profile_tab = "dados"
                 auth_state.user_name = name
                 auth_state.user_email = email
+                auth_state.orders = []
+                auth_state._refresh_orders()
                 auth_state.user_cpf = format_cpf(cpf)
                 auth_state.user_birth_date = format_birth_date(birth_date)
 
@@ -1466,7 +1969,7 @@ class RegistrationState(rx.State):
             self.password = ""
             self.is_submitting = False
 
-def category_item(category: rx.Var[Any]) -> rx.Component:
+def category_item(category: Any) -> rx.Component:
     return rx.cond(
         category["available"],
         rx.button(
@@ -1532,8 +2035,10 @@ def category_item(category: rx.Var[Any]) -> rx.Component:
         ),
     )
 
-def product_card(product: rx.Var[Product]) -> rx.Component:
-    return rx.button(
+def product_card(product: Any) -> rx.Component:
+    # O card é um contêiner não interativo: o gatilho de detalhes e o botão
+    # "Comprar +" são controles irmãos (nada de botão dentro de botão).
+    details_trigger = rx.button(
         rx.vstack(
             rx.image(
                 src=product["image_url"],
@@ -1572,17 +2077,57 @@ def product_card(product: rx.Var[Product]) -> rx.Component:
         ),
         on_click=CatalogState.open_product_details(product["name"]),
         aria_label=f"Ver detalhes de {product['name']}",
+        type="button",
         variant="ghost",
         width="100%",
         max_width="100%",
         min_height="0",
-        height="100%",
-        padding="12px",
+        flex="1",
+        height="auto",
+        padding="0",
+        margin="0",
         color="#f5f3ff",
         text_align="left",
         white_space="normal",
         align_items="stretch",
         justify_content="flex-start",
+        background="transparent",
+        cursor="pointer",
+        _hover={"background": "transparent"},
+    )
+    # Botão só visual: sem on_click, sem link e sem estado.
+    buy_button = rx.button(
+        "Comprar +",
+        type="button",
+        aria_label=f"Comprar {product['name']}",
+        width="100%",
+        max_width="100%",
+        min_height="44px",
+        padding="10px 16px",
+        color="#ffffff",
+        font_weight="700",
+        font_size="15px",
+        white_space="normal",
+        background="#16a34a",
+        border_radius="12px",
+        cursor="pointer",
+        _hover={"background": "#15803d"},
+        _focus_visible={"outline": "2px solid #86efac", "outline_offset": "2px"},
+    )
+    return rx.box(
+        details_trigger,
+        buy_button,
+        display="flex",
+        flex_direction="column",
+        gap="14px",
+        width="280px",
+        flex="1 1 280px",
+        max_width="320px",
+        min_width="0",
+        min_height="460px",
+        height="100%",
+        padding="18px",
+        color="#f5f3ff",
         background="linear-gradient(145deg, rgba(24, 20, 36, 0.92), rgba(15, 14, 22, 0.96))",
         border="1px solid rgba(167, 139, 250, 0.16)",
         border_radius="24px",
@@ -1596,7 +2141,7 @@ def product_card(product: rx.Var[Product]) -> rx.Component:
         },
     )
 
-def specification_row(specification: rx.Var[Specification]) -> rx.Component:
+def specification_row(specification: Any) -> rx.Component:
     return rx.hstack(
         rx.text(
             specification["label"],
@@ -1743,7 +2288,7 @@ def product_details_dialog() -> rx.Component:
         on_open_change=CatalogState.set_product_details_open,
     )
 
-def cart_item_row(item: rx.Var[CartItem]) -> rx.Component:
+def cart_item_row(item: Any) -> rx.Component:
     return rx.hstack(
         rx.image(
             src=item["image_url"],
@@ -3428,6 +3973,60 @@ def index() -> rx.Component:
         background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
     )
 
+def order_confirmation_banner() -> rx.Component:
+    """Quadro de confirmação com o número do pedido, mostrado depois de finalizar."""
+    return rx.cond(
+        CatalogState.last_order_id != "",
+        rx.vstack(
+            rx.hstack(
+                rx.icon("circle_check", size=28, color="#4ade80"),
+                rx.heading("Pedido realizado!", size="6", color="#f5f3ff"),
+                spacing="3",
+                align="center",
+            ),
+            rx.text("Número do pedido", color="#a1a1aa", font_size="13px"),
+            rx.text(
+                CatalogState.last_order_id,
+                color="#e9d5ff",
+                font_size="28px",
+                font_weight="800",
+                letter_spacing="0.04em",
+                id="numero-pedido",
+            ),
+            rx.hstack(
+                rx.text("Total: " + CatalogState.last_order_total_display, color="#f5f3ff", font_size="14px"),
+                rx.text("•", color="#a1a1aa"),
+                rx.text("Status: " + CatalogState.last_order_status, color="#f5f3ff", font_size="14px"),
+                spacing="2",
+                wrap="wrap",
+            ),
+            rx.text(
+                "Guarde este número: ele também aparece em Meus Pedidos.",
+                color="#a1a1aa",
+                font_size="13px",
+            ),
+            rx.hstack(
+                rx.button("Ver em Meus Pedidos", on_click=CatalogState.go_to_my_orders, color_scheme="purple"),
+                rx.button(
+                    "Continuar comprando",
+                    on_click=[CatalogState.clear_last_order, rx.redirect("/")],
+                    variant="soft",
+                    color_scheme="gray",
+                ),
+                spacing="3",
+                wrap="wrap",
+            ),
+            width="100%",
+            padding="24px",
+            spacing="3",
+            background="rgba(74, 222, 128, 0.06)",
+            border="1px solid rgba(74, 222, 128, 0.35)",
+            border_radius="20px",
+        ),
+        rx.fragment(),
+    )
+
+
 def checkout_page() -> rx.Component:
     return rx.box(
         rx.vstack(
@@ -3477,6 +4076,8 @@ def checkout_page() -> rx.Component:
             # Content / Auth Guard
             rx.cond(
                 AuthState.is_logged_in,
+                rx.vstack(
+                order_confirmation_banner(),
                 rx.form(
                     rx.flex(
                     # Left: Form (Address & Payment)
@@ -3650,6 +4251,16 @@ def checkout_page() -> rx.Component:
                         ),
                         # Conditional Payment Inputs
                         rx.cond(
+                            CatalogState.payments_simulated,
+                            rx.callout(
+                                "Modo simulado (desenvolvimento local, sem ASAAS_API_KEY): "
+                                "o pedido é criado normalmente, mas nenhum pagamento é processado "
+                                "e nenhum dado de cartão é pedido.",
+                                icon="info",
+                                color_scheme="amber",
+                                width="100%",
+                            ),
+                        rx.cond(
                             CatalogState.payment_method == "credit_card",
                             rx.vstack(
                                 rx.heading(
@@ -3679,7 +4290,7 @@ def checkout_page() -> rx.Component:
                                             name="holder_name",
                                             default_value=AuthState.user_name,
                                             placeholder="Nome do titular",
-                                            auto_complete=True,
+                                            autocomplete="on",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -3700,7 +4311,7 @@ def checkout_page() -> rx.Component:
                                             type="email",
                                             default_value=AuthState.user_email,
                                             placeholder="nome@exemplo.com",
-                                            auto_complete=True,
+                                            autocomplete="on",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -3725,7 +4336,7 @@ def checkout_page() -> rx.Component:
                                             name="cpf_cnpj",
                                             default_value=AuthState.user_cpf,
                                             placeholder="000.000.000-00",
-                                            auto_complete=False,
+                                            autocomplete="off",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -3745,7 +4356,7 @@ def checkout_page() -> rx.Component:
                                             name="phone",
                                             default_value=AuthState.user_phone,
                                             placeholder="11999999999",
-                                            auto_complete=True,
+                                            autocomplete="on",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -3770,7 +4381,7 @@ def checkout_page() -> rx.Component:
                                             name="card_number",
                                             input_mode="numeric",
                                             placeholder="Número do cartão de teste",
-                                            auto_complete=False,
+                                            autocomplete="off",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -3788,7 +4399,7 @@ def checkout_page() -> rx.Component:
                                         rx.input(
                                             name="expiration",
                                             type="month",
-                                            auto_complete=False,
+                                            autocomplete="off",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -3808,7 +4419,7 @@ def checkout_page() -> rx.Component:
                                             name="ccv",
                                             type="password",
                                             input_mode="numeric",
-                                            auto_complete=False,
+                                            autocomplete="off",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -3833,7 +4444,7 @@ def checkout_page() -> rx.Component:
                                             name="postal_code",
                                             default_value=CatalogState.shipping_cep,
                                             placeholder="00000-000",
-                                            auto_complete=True,
+                                            autocomplete="on",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -3853,7 +4464,7 @@ def checkout_page() -> rx.Component:
                                             name="address_number",
                                             default_value=CatalogState.shipping_number,
                                             placeholder="Número",
-                                            auto_complete=False,
+                                            autocomplete="off",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -3914,6 +4525,7 @@ def checkout_page() -> rx.Component:
                                 ),
                             ),
                         ),
+                        ),
                         width="100%",
                         flex="2",
                         spacing="4",
@@ -3957,9 +4569,13 @@ def checkout_page() -> rx.Component:
                         ),
                         rx.button(
                             rx.cond(
-                                CatalogState.payment_method == "credit_card",
-                                "Criar cobrança no Asaas Sandbox",
-                                "Confirmar Pedido",
+                                CatalogState.payments_simulated,
+                                "Confirmar Pedido (simulado)",
+                                rx.cond(
+                                    CatalogState.payment_method == "credit_card",
+                                    "Criar cobrança no Asaas Sandbox",
+                                    "Confirmar Pedido",
+                                ),
                             ),
                             type="submit",
                             color_scheme="purple",
@@ -3968,8 +4584,9 @@ def checkout_page() -> rx.Component:
                             font_weight="700",
                             margin_top="16px",
                             disabled=rx.cond(
-                                CatalogState.payment_method == "credit_card",
-                                CatalogState.is_processing_payment,
+                                CatalogState.payments_simulated
+                                | (CatalogState.payment_method == "credit_card"),
+                                CatalogState.is_processing_payment | (CatalogState.cart_count == 0),
                                 True,
                             ),
                         ),
@@ -4001,6 +4618,9 @@ def checkout_page() -> rx.Component:
                     on_submit=CatalogState.finalize_order,
                     reset_on_submit=True,
                     ),
+                width="100%",
+                spacing="5",
+                ),
             # Not logged in view
             rx.vstack(
                 rx.box(
@@ -4049,6 +4669,133 @@ def checkout_page() -> rx.Component:
         overflow_x="hidden",
         background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
     )
+
+def admin_product_row(prod: rx.Var[Product]) -> rx.Component:
+    return rx.hstack(
+        rx.vstack(
+            rx.text(prod["name"], color="#f5f3ff", font_weight="600", font_size="14px"),
+            rx.hstack(
+                rx.text(prod["category"], color="#a1a1aa", font_size="12px"),
+                rx.text("•", color="#a1a1aa", font_size="12px"),
+                rx.text(prod["price_display"], color="#c4b5fd", font_size="12px", font_weight="600"),
+                spacing="2",
+            ),
+            spacing="1",
+            align="start",
+        ),
+        rx.spacer(),
+        rx.hstack(
+            rx.button(
+                "Editar",
+                on_click=CatalogState.open_edit_product(prod["name"]),
+                color_scheme="purple",
+                size="1",
+                variant="soft",
+            ),
+            rx.button(
+                "Excluir",
+                on_click=CatalogState.delete_product(prod["name"]),
+                color_scheme="red",
+                size="1",
+                variant="soft",
+            ),
+            spacing="2",
+        ),
+        width="100%",
+        padding="12px",
+        background="#11111a",
+        border="1px solid rgba(167, 139, 250, 0.12)",
+        border_radius="10px",
+        align="center",
+        justify="between",
+    )
+
+def _edit_field(label: str, control: rx.Component) -> rx.Component:
+    return rx.vstack(
+        rx.text(label, color="#e4e4e7", font_size="13px", font_weight="600"),
+        control,
+        width="100%", spacing="2", align="start",
+    )
+
+
+_EDIT_INPUT_STYLE = dict(
+    width="100%", height="40px", background="#11111a",
+    border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff",
+)
+
+
+def admin_edit_product_dialog() -> rx.Component:
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.vstack(
+                rx.dialog.title("Editar Produto", color="#f5f3ff", font_size="20px", font_weight="700"),
+                rx.text(
+                    "Alterando: " + CatalogState.edit_original_name,
+                    color="#a1a1aa", font_size="13px",
+                ),
+                rx.cond(
+                    CatalogState.edit_image_url != "",
+                    rx.image(
+                        src=CatalogState.edit_image_url,
+                        alt="Pré-visualização da foto",
+                        width="100%", height="140px", object_fit="contain",
+                        background="#0b0b12", border_radius="10px",
+                    ),
+                    rx.fragment(),
+                ),
+                rx.grid(
+                    _edit_field("Nome do Produto", rx.input(
+                        value=CatalogState.edit_name, on_change=CatalogState.set_edit_name,
+                        aria_label="Nome do produto", **_EDIT_INPUT_STYLE,
+                    )),
+                    _edit_field("Preço (R$)", rx.input(
+                        value=CatalogState.edit_price, on_change=CatalogState.set_edit_price,
+                        aria_label="Preço do produto", **_EDIT_INPUT_STYLE,
+                    )),
+                    _edit_field("Categoria", rx.select(
+                        list(CATEGORIES),
+                        value=CatalogState.edit_category, on_change=CatalogState.set_edit_category,
+                        aria_label="Categoria do produto", width="100%",
+                    )),
+                    _edit_field("Marca", rx.input(
+                        value=CatalogState.edit_brand, on_change=CatalogState.set_edit_brand,
+                        aria_label="Marca do produto", **_EDIT_INPUT_STYLE,
+                    )),
+                    columns=rx.breakpoints(initial="1", sm="2"), spacing="3", width="100%",
+                ),
+                _edit_field("Descrição", rx.text_area(
+                    value=CatalogState.edit_description, on_change=CatalogState.set_edit_description,
+                    aria_label="Descrição do produto",
+                    width="100%", height="90px", background="#11111a",
+                    border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff",
+                )),
+                _edit_field("URL da Foto do Produto", rx.input(
+                    value=CatalogState.edit_image_url, on_change=CatalogState.set_edit_image_url,
+                    aria_label="URL da foto do produto", placeholder="https://exemplo.com/imagem.png",
+                    **_EDIT_INPUT_STYLE,
+                )),
+                rx.cond(
+                    CatalogState.edit_error != "",
+                    rx.text(CatalogState.edit_error, color="#f87171", font_size="13px"),
+                    rx.fragment(),
+                ),
+                rx.hstack(
+                    rx.dialog.close(
+                        rx.button("Cancelar", variant="soft", color_scheme="gray"),
+                    ),
+                    rx.button("Salvar Alterações", on_click=CatalogState.save_edited_product, color_scheme="purple"),
+                    justify="end", spacing="3", width="100%",
+                ),
+                spacing="4", width="100%",
+            ),
+            background="#161522",
+            border="1px solid rgba(167, 139, 250, 0.3)",
+            max_width="560px",
+        ),
+        open=CatalogState.edit_dialog_open,
+        on_open_change=CatalogState.set_edit_dialog_open,
+    )
+
 
 def address_row(addr: rx.Var[AddressItem]) -> rx.Component:
     return rx.hstack(
@@ -4192,6 +4939,18 @@ def profile_page() -> rx.Component:
                             width="100%",
                             justify_content="start",
                         ),
+                        rx.cond(
+                            AuthState.is_admin,
+                            rx.button(
+                                "Gerenciar Site",
+                                on_click=AuthState.set_profile_tab("admin"),
+                                variant=rx.cond(AuthState.profile_tab == "admin", "solid", "soft"),
+                                color_scheme="ruby",
+                                width="100%",
+                                justify_content="start",
+                            ),
+                            rx.fragment(),
+                        ),
                         width="100%",
                         flex="1",
                         min_width="240px",
@@ -4309,7 +5068,7 @@ def profile_page() -> rx.Component:
                                                     rx.vstack(
                                                         rx.text(order["id"], color="#f5f3ff", font_weight="700", font_size="15px"),
                                                         rx.text(
-                                                            "Data: " + order["date"].to_string() + " • " + order["items_count"].to_string() + " item(ns)",
+                                                            "Data: " + order["date"].to(str) + " • " + order["items_count"].to_string() + " item(ns)",
                                                             color="#a1a1aa",
                                                             font_size="13px"
                                                         ),
@@ -4545,6 +5304,109 @@ def profile_page() -> rx.Component:
                                             ),
                                             width="100%",
                                             spacing="4",
+                                        ),
+                                        rx.cond(
+                                            AuthState.profile_tab == "admin",
+                                            rx.vstack(
+                                                rx.heading("Painel Administrativo - Gerenciar Site", size="6", color="#f5f3ff"),
+                                                rx.text("Adicione novos produtos ou gerencie o catálogo da loja.", color="#a1a1aa", font_size="14px"),
+                                                rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                                                rx.cond(
+                                                    CatalogState.admin_message != "",
+                                                    rx.text(
+                                                        CatalogState.admin_message,
+                                                        color=rx.cond(CatalogState.admin_error, "#f87171", "#4ade80"),
+                                                        font_size="13px",
+                                                    ),
+                                                    rx.fragment(),
+                                                ),
+                                                rx.vstack(
+                                                    rx.heading("Adicionar Novo Produto", size="4", color="#e9d5ff"),
+                                                    rx.grid(
+                                                        rx.vstack(
+                                                            rx.text("Nome do Produto", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=CatalogState.new_product_name,
+                                                                on_change=CatalogState.set_new_product_name,
+                                                                placeholder="Ex: Placa de Vídeo RTX 4080",
+                                                                width="100%", height="40px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff"
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        rx.vstack(
+                                                            rx.text("Preço (R$)", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=CatalogState.new_product_price,
+                                                                on_change=CatalogState.set_new_product_price,
+                                                                placeholder="Ex: 5499.90",
+                                                                width="100%", height="40px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff"
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        columns="2", spacing="3", width="100%",
+                                                    ),
+                                                    rx.grid(
+                                                        rx.vstack(
+                                                            rx.text("Categoria", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.select(
+                                                                list(CATEGORIES),
+                                                                value=CatalogState.new_product_category,
+                                                                on_change=CatalogState.set_new_product_category,
+                                                                aria_label="Categoria do novo produto",
+                                                                width="100%",
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        rx.vstack(
+                                                            rx.text("Marca", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                            rx.input(
+                                                                value=CatalogState.new_product_brand,
+                                                                on_change=CatalogState.set_new_product_brand,
+                                                                placeholder="NVIDIA, AMD...",
+                                                                width="100%", height="40px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff"
+                                                            ),
+                                                            width="100%", spacing="2", align="start",
+                                                        ),
+                                                        columns="2", spacing="3", width="100%",
+                                                    ),
+                                                    rx.vstack(
+                                                        rx.text("Descrição", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                        rx.text_area(
+                                                            value=CatalogState.new_product_description,
+                                                            on_change=CatalogState.set_new_product_description,
+                                                            placeholder="Descrição detalhada...",
+                                                            width="100%", height="80px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff"
+                                                        ),
+                                                        width="100%", spacing="2", align="start",
+                                                    ),
+                                                    rx.vstack(
+                                                        rx.text("URL da Foto do Produto", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                        rx.input(
+                                                            value=CatalogState.new_product_image_url,
+                                                            on_change=CatalogState.set_new_product_image_url,
+                                                            placeholder="https://exemplo.com/imagem.png",
+                                                            width="100%", height="40px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff"
+                                                        ),
+                                                        width="100%", spacing="2", align="start",
+                                                    ),
+                                                    rx.button(
+                                                        "Cadastrar Produto",
+                                                        on_click=CatalogState.add_product,
+                                                        color_scheme="purple",
+                                                        size="2",
+                                                        width="100%",
+                                                    ),
+                                                    width="100%", padding="20px", background="#161522", border="1px solid rgba(167, 139, 250, 0.3)", border_radius="16px", spacing="4",
+                                                ),
+                                                rx.heading("Produtos no Catálogo", size="4", color="#e9d5ff", margin_top="16px"),
+                                                rx.vstack(
+                                                    rx.foreach(CatalogState.products, admin_product_row),
+                                                    width="100%", spacing="2", max_height="400px", overflow_y="auto",
+                                                ),
+                                                admin_edit_product_dialog(),
+                                                width="100%", spacing="4",
+                                            ),
+                                            rx.fragment(),
                                         ),
                                     ),
                                 ),
@@ -4919,10 +5781,15 @@ def admin_page() -> rx.Component:
 
 
 app = rx.App()
-app.add_page(index, route="/")
+app.add_page(index, route="/", on_load=CatalogState.refresh_catalog)
 app.add_page(login_page, route="/login", title="Entrar | NightFall")
 app.add_page(registration_page, route="/cadastro", title="Criar conta | NightFall")
 app.add_page(cart_page, route="/carrinho", title="Carrinho de Compras | NightFall")
 app.add_page(checkout_page, route="/pagamento", title="Pagamento | NightFall")
-app.add_page(profile_page, route="/perfil", title="Meu Perfil | NightFall")
-app.add_page(admin_page, route="/admin", title="Painel Administrativo | NightFall")
+app.add_page(
+    profile_page,
+    route="/perfil",
+    title="Meu Perfil | NightFall",
+    on_load=[CatalogState.refresh_catalog, AuthState.load_my_orders],
+)
+app.add_page(admin_page, route="/admin", title="Painel Administrativo | NightFall", on_load=CatalogState.refresh_catalog)
