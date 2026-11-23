@@ -1,9 +1,12 @@
 """NightFall storefront landing page and auth flow."""
 
 import asyncio
+import copy
 import json
 import math
 import os
+import tempfile
+import threading
 from datetime import date, datetime
 from decimal import Decimal
 from ipaddress import ip_address
@@ -251,7 +254,6 @@ def parse_catalog_data(data: list[Any]) -> list[Product]:
     required_fields = {
         "name",
         "image_url",
-        "source_url",
         "price",
         "description",
         "category",
@@ -266,12 +268,20 @@ def parse_catalog_data(data: list[Any]) -> list[Product]:
             missing = ", ".join(sorted(missing_fields))
             raise ValueError(f"Produto {index} sem os campos obrigatórios: {missing}.")
 
-        for field in ("name", "image_url", "source_url", "description", "category"):
+        for field in ("name", "image_url", "description", "category"):
             if not isinstance(item[field], str) or not item[field].strip():
                 raise ValueError(f"Campo '{field}' do produto {index} deve ser texto não vazio.")
 
-        for field in ("image_url", "source_url"):
-            product_url = urlparse(item[field])
+        # source_url é opcional: produtos cadastrados pelo painel não têm loja de origem.
+        source_url = item.get("source_url", "")
+        if not isinstance(source_url, str):
+            raise ValueError(f"Campo 'source_url' do produto {index} deve ser texto.")
+        source_url = source_url.strip()
+
+        for field, url_value in (("image_url", item["image_url"]), ("source_url", source_url)):
+            if field == "source_url" and not url_value:
+                continue
+            product_url = urlparse(url_value)
             if product_url.scheme not in {"http", "https"} or not product_url.netloc:
                 raise ValueError(
                     f"URL do campo '{field}' do produto {index} deve ser HTTP ou HTTPS."
@@ -326,7 +336,7 @@ def parse_catalog_data(data: list[Any]) -> list[Product]:
             {
                 "name": item["name"].strip(),
                 "image_url": item["image_url"].strip(),
-                "source_url": item["source_url"].strip(),
+                "source_url": source_url,
                 "price": price,
                 "price_display": f"R$ {formatted_price}",
                 "description": item["description"].strip(),
@@ -354,8 +364,123 @@ def load_catalog(path: Path = CATALOG_PATH) -> list[Product]:
         data = json.load(catalog_file)
     return parse_catalog_data(data)
 
+
+# --- Persistência do catálogo (painel admin) ---
+# O catálogo vivo do processo fica em _catalog_cache. Toda alteração passa por
+# mutate_catalog, que trabalha sobre o cache (e não sobre a cópia da sessão),
+# valida com parse_catalog_data e grava o catalog.json de forma atômica.
+_CATALOG_LOCK = threading.Lock()
+_catalog_cache: list[Product] = load_catalog()
+
+
+def current_catalog() -> list[Product]:
+    with _CATALOG_LOCK:
+        return copy.deepcopy(_catalog_cache)
+
+
+def _product_to_json(product: Product) -> dict[str, Any]:
+    return {
+        "name": product["name"],
+        "image_url": product["image_url"],
+        "source_url": product.get("source_url", ""),
+        "price": product["price"],
+        "description": product["description"],
+        "category": product["category"],
+        "specifications": [
+            {"label": spec["label"], "value": spec["value"]}
+            for spec in product["specifications"]
+        ],
+    }
+
+
+def _write_catalog_file(data: list[dict[str, Any]], path: Path) -> None:
+    fd, tmp_name = tempfile.mkstemp(prefix=".catalog-", suffix=".json", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as tmp_file:
+            json.dump(data, tmp_file, ensure_ascii=False, indent=2)
+            tmp_file.write("\n")
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def mutate_catalog(change, path: Path = CATALOG_PATH) -> list[Product]:
+    """Aplica `change(produtos) -> produtos` ao catálogo, valida e grava no disco.
+
+    Lança ValueError (com mensagem para o usuário) se a mudança for inválida;
+    nesse caso nem o arquivo nem o cache são alterados.
+    """
+    with _CATALOG_LOCK:
+        updated = change(copy.deepcopy(_catalog_cache))
+        data = [_product_to_json(p) for p in updated]
+        parsed = parse_catalog_data(data)
+        _write_catalog_file(data, path)
+        _catalog_cache[:] = parsed
+        return copy.deepcopy(parsed)
+
+
+def build_product(
+    *,
+    name: str,
+    price_text: str,
+    category: str,
+    brand: str,
+    description: str,
+    image_url: str,
+    source_url: str = "",
+    other_specs: list[Specification] | None = None,
+) -> Product:
+    """Monta um produto a partir do formulário do painel. Lança ValueError se inválido."""
+    name = name.strip()
+    category = category.strip()
+    description = description.strip()
+    image_url = image_url.strip()
+    brand = brand.strip()
+    price_text = price_text.strip().replace(",", ".")
+
+    if not name:
+        raise ValueError("Informe o nome do produto.")
+    if not price_text:
+        raise ValueError("Informe o preço.")
+    try:
+        price = float(price_text)
+    except ValueError:
+        raise ValueError("Preço inválido. Use números, ex.: 5499.90") from None
+    if not math.isfinite(price) or price < 0:
+        raise ValueError("O preço deve ser um número não negativo.")
+    if category not in CATEGORIES:
+        raise ValueError(f"Escolha uma categoria: {', '.join(CATEGORIES)}.")
+    if not description:
+        raise ValueError("Informe a descrição do produto.")
+    url = urlparse(image_url)
+    if url.scheme not in {"http", "https"} or not url.netloc:
+        raise ValueError("Informe a URL da foto, começando com http:// ou https://.")
+
+    specs: list[Specification] = [
+        s for s in (other_specs or []) if s["label"].lower() != "marca"
+    ]
+    if brand:
+        specs.insert(0, {"label": "Marca", "value": brand})
+
+    formatted = f"{Decimal(str(price)):,.2f}"
+    formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+    return {
+        "name": name,
+        "image_url": image_url,
+        "source_url": source_url.strip(),
+        "price": price,
+        "price_display": f"R$ {formatted}",
+        "description": description,
+        "category": category,
+        "specifications": specs,
+    }
+
 class CatalogState(rx.State):
-    products: list[Product] = load_catalog()
+    products: list[Product] = current_catalog()
     selected_category: str = "Todos"
     search_query: str = ""
     category_menu_open: bool = False
@@ -447,7 +572,7 @@ class CatalogState(rx.State):
 
     new_product_name: str = ""
     new_product_price: str = ""
-    new_product_category: str = "Processadores"
+    new_product_category: str = "Componentes"
     new_product_brand: str = ""
     new_product_description: str = ""
     new_product_image_url: str = ""
@@ -477,44 +602,49 @@ class CatalogState(rx.State):
     def set_new_product_image_url(self, val: str):
         self.new_product_image_url = val
 
+    admin_error: bool = False
+
+    async def _is_admin(self) -> bool:
+        auth = await self.get_state(AuthState)
+        return bool(auth.is_logged_in and auth.is_admin)
+
+    def _admin_feedback(self, message: str, error: bool = False):
+        self.admin_message = message
+        self.admin_error = error
+
     @rx.event
-    def add_product(self):
-        name = self.new_product_name.strip()
-        price_str = self.new_product_price.strip().replace(",", ".")
-        category = self.new_product_category.strip()
-        brand = self.new_product_brand.strip()
-        description = self.new_product_description.strip()
-        image_url = self.new_product_image_url.strip()
+    def refresh_catalog(self):
+        """Recarrega o catálogo salvo (usado no on_load das páginas)."""
+        self.products = current_catalog()
 
-        if not name or not price_str or not category:
-            self.admin_message = "Preencha nome, preço e categoria."
+    @rx.event
+    async def add_product(self):
+        if not await self._is_admin():
+            self._admin_feedback("Apenas administradores podem alterar o catálogo.", True)
             return
-
         try:
-            price = float(price_str)
-        except ValueError:
-            self.admin_message = "Preço inválido."
+            new_prod = build_product(
+                name=self.new_product_name,
+                price_text=self.new_product_price,
+                category=self.new_product_category,
+                brand=self.new_product_brand,
+                description=self.new_product_description,
+                image_url=self.new_product_image_url,
+            )
+
+            def change(products: list[Product]) -> list[Product]:
+                if any(p["name"] == new_prod["name"] for p in products):
+                    raise ValueError(f"Já existe um produto chamado '{new_prod['name']}'.")
+                return products + [new_prod]
+
+            self.products = mutate_catalog(change)
+        except ValueError as exc:
+            self._admin_feedback(str(exc), True)
             return
-
-        specs = []
-        if brand:
-            specs.append({"label": "Marca", "value": brand})
-
-        formatted_price = f"{Decimal(str(price)):,.2f}"
-        formatted_price = formatted_price.replace(",", "X").replace(".", ",").replace("X", ".")
-
-        new_prod: Product = {
-            "name": name,
-            "image_url": image_url if image_url else "",
-            "source_url": "",
-            "price": price,
-            "price_display": f"R$ {formatted_price}",
-            "description": description,
-            "category": category,
-            "specifications": specs,
-        }
-        self.products.append(new_prod)
-        self.admin_message = f"Produto '{name}' adicionado com sucesso!"
+        except OSError:
+            self._admin_feedback("Não foi possível gravar o catalog.json.", True)
+            return
+        self._admin_feedback(f"Produto '{new_prod['name']}' adicionado e salvo no catálogo!")
         self.new_product_name = ""
         self.new_product_price = ""
         self.new_product_brand = ""
@@ -522,38 +652,18 @@ class CatalogState(rx.State):
         self.new_product_image_url = ""
 
     @rx.event
-    def delete_product(self, product_name: str):
-        self.products = [p for p in self.products if p["name"] != product_name]
-        self.admin_message = f"Produto '{product_name}' excluído."
-
-    @rx.event
-    def update_product(self, product_name: str, field: str, value: str):
-        for p in self.products:
-            if p["name"] == product_name:
-                if field == "name":
-                    p["name"] = value
-                elif field == "price":
-                    try:
-                        price = float(value.replace(",", "."))
-                        p["price"] = price
-                        formatted = f"{Decimal(str(price)):,.2f}"
-                        formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
-                        p["price_display"] = f"R$ {formatted}"
-                    except ValueError:
-                        pass
-                elif field == "category":
-                    p["category"] = value
-                elif field == "description":
-                    p["description"] = value
-                elif field == "brand":
-                    brand_found = False
-                    for spec in p["specifications"]:
-                        if spec["label"].lower() == "marca":
-                            spec["value"] = value
-                            brand_found = True
-                    if not brand_found:
-                        p["specifications"].append({"label": "Marca", "value": value})
-        self.products = list(self.products)
+    async def delete_product(self, product_name: str):
+        if not await self._is_admin():
+            self._admin_feedback("Apenas administradores podem alterar o catálogo.", True)
+            return
+        try:
+            self.products = mutate_catalog(
+                lambda products: [p for p in products if p["name"] != product_name]
+            )
+        except (ValueError, OSError):
+            self._admin_feedback("Não foi possível gravar o catalog.json.", True)
+            return
+        self._admin_feedback(f"Produto '{product_name}' excluído do catálogo.")
 
     # --- Edição de produto (painel admin) ---
     edit_dialog_open: bool = False
@@ -617,66 +727,52 @@ class CatalogState(rx.State):
         self.edit_dialog_open = True
 
     @rx.event
-    def save_edited_product(self):
-        name = self.edit_name.strip()
-        price_str = self.edit_price.strip().replace(",", ".")
-        category = self.edit_category.strip()
-        brand = self.edit_brand.strip()
-
-        if not name or not price_str or not category:
-            self.edit_error = "Preencha nome, preço e categoria."
-            return
-        try:
-            price = float(price_str)
-        except ValueError:
-            self.edit_error = "Preço inválido. Use números, ex.: 5499.90"
-            return
-        if price < 0:
-            self.edit_error = "O preço não pode ser negativo."
+    async def save_edited_product(self):
+        if not await self._is_admin():
+            self.edit_error = "Apenas administradores podem alterar o catálogo."
             return
         original = self.edit_original_name
-        if name != original and any(p["name"] == name for p in self.products):
-            self.edit_error = f"Já existe um produto chamado '{name}'."
+
+        def change(products: list[Product]) -> list[Product]:
+            current = next((p for p in products if p["name"] == original), None)
+            if current is None:
+                raise ValueError(f"Produto '{original}' não encontrado.")
+            edited = build_product(
+                name=self.edit_name,
+                price_text=self.edit_price,
+                category=self.edit_category,
+                brand=self.edit_brand,
+                description=self.edit_description,
+                image_url=self.edit_image_url,
+                source_url=current.get("source_url", ""),
+                other_specs=current["specifications"],
+            )
+            if edited["name"] != original and any(p["name"] == edited["name"] for p in products):
+                raise ValueError(f"Já existe um produto chamado '{edited['name']}'.")
+            return [edited if p["name"] == original else p for p in products]
+
+        try:
+            self.products = mutate_catalog(change)
+        except ValueError as exc:
+            self.edit_error = str(exc)
+            return
+        except OSError:
+            self.edit_error = "Não foi possível gravar o catalog.json."
             return
 
-        formatted = f"{Decimal(str(price)):,.2f}"
-        formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
-        price_display = f"R$ {formatted}"
-
-        new_image_url = self.edit_image_url.strip()
-        updated = False
-        for p in self.products:
-            if p["name"] != original:
-                continue
-            p["name"] = name
-            p["price"] = price
-            p["price_display"] = price_display
-            p["category"] = category
-            p["description"] = self.edit_description.strip()
-            p["image_url"] = new_image_url
-            specs = [s for s in p["specifications"] if s["label"].lower() != "marca"]
-            if brand:
-                specs.insert(0, {"label": "Marca", "value": brand})
-            p["specifications"] = specs
-            updated = True
-            break
-        if not updated:
-            self.edit_error = f"Produto '{original}' não encontrado."
-            return
-        self.products = list(self.products)
-
+        saved = next(p for p in self.products if p["name"] == self.edit_name.strip())
         # Mantém o carrinho coerente com o produto editado
         for item in self.cart_items:
             if item["name"] == original:
-                item["name"] = name
-                item["price"] = price
-                item["price_display"] = price_display
-                item["image_url"] = new_image_url
+                item["name"] = saved["name"]
+                item["price"] = saved["price"]
+                item["price_display"] = saved["price_display"]
+                item["image_url"] = saved["image_url"]
         self.cart_items = list(self.cart_items)
 
         self.edit_dialog_open = False
         self.edit_error = ""
-        self.admin_message = f"Produto '{name}' atualizado com sucesso!"
+        self._admin_feedback(f"Produto '{saved['name']}' atualizado e salvo no catálogo!")
 
     @rx.event
     def set_coupon_code(self, code: str):
@@ -1199,32 +1295,33 @@ class AdminState(rx.State):
         img = self.new_prod_image_url.strip() or "https://images.unsplash.com/photo-1587202372775-e229f172b9d7?auto=format&fit=crop&w=600&q=80"
         brand = self.new_prod_brand.strip() or "NightFall"
 
-        if not name or not price_str or not desc:
-            self.admin_message = "Preencha nome, preço e descrição do produto."
-            return
-
-        try:
-            price = float(price_str)
-        except ValueError:
-            self.admin_message = "Preço inválido. Digite um número válido."
-            return
-
-        formatted_price = f"{Decimal(str(price)):,.2f}"
-        formatted_price = formatted_price.replace(",", "X").replace(".", ",").replace("X", ".")
-
         catalog_state = await self.get_state(CatalogState)
-        new_item: Product = {
-            "name": name,
-            "image_url": img,
-            "source_url": "https://nightfall.com.br",
-            "price": price,
-            "price_display": f"R$ {formatted_price}",
-            "description": desc,
-            "category": cat,
-            "specifications": [{"label": "Marca", "value": brand}] if brand else []
-        }
-        catalog_state.products = list(catalog_state.products) + [new_item]
-        self.admin_message = f"Produto '{name}' cadastrado com sucesso!"
+        if not await catalog_state._is_admin():
+            self.admin_message = "Apenas administradores podem alterar o catálogo."
+            return
+        try:
+            new_item = build_product(
+                name=name,
+                price_text=price_str,
+                category=cat,
+                brand=brand,
+                description=desc,
+                image_url=img,
+            )
+
+            def change(products: list[Product]) -> list[Product]:
+                if any(p["name"] == new_item["name"] for p in products):
+                    raise ValueError(f"Já existe um produto chamado '{new_item['name']}'.")
+                return products + [new_item]
+
+            catalog_state.products = mutate_catalog(change)
+        except ValueError as exc:
+            self.admin_message = str(exc)
+            return
+        except OSError:
+            self.admin_message = "Não foi possível gravar o catalog.json."
+            return
+        self.admin_message = f"Produto '{name}' cadastrado e salvo no catálogo!"
         self.new_prod_name = ""
         self.new_prod_price = ""
         self.new_prod_description = ""
@@ -1234,7 +1331,16 @@ class AdminState(rx.State):
     @rx.event
     async def delete_catalog_product(self, product_name: str):
         catalog_state = await self.get_state(CatalogState)
-        catalog_state.products = [p for p in catalog_state.products if p["name"] != product_name]
+        if not await catalog_state._is_admin():
+            self.admin_message = "Apenas administradores podem alterar o catálogo."
+            return
+        try:
+            catalog_state.products = mutate_catalog(
+                lambda products: [p for p in products if p["name"] != product_name]
+            )
+        except (ValueError, OSError):
+            self.admin_message = "Não foi possível gravar o catalog.json."
+            return
         self.admin_message = f"Produto '{product_name}' removido do catálogo."
 
 
@@ -4376,9 +4482,10 @@ def admin_edit_product_dialog() -> rx.Component:
                         value=CatalogState.edit_price, on_change=CatalogState.set_edit_price,
                         aria_label="Preço do produto", **_EDIT_INPUT_STYLE,
                     )),
-                    _edit_field("Categoria", rx.input(
+                    _edit_field("Categoria", rx.select(
+                        list(CATEGORIES),
                         value=CatalogState.edit_category, on_change=CatalogState.set_edit_category,
-                        aria_label="Categoria do produto", **_EDIT_INPUT_STYLE,
+                        aria_label="Categoria do produto", width="100%",
                     )),
                     _edit_field("Marca", rx.input(
                         value=CatalogState.edit_brand, on_change=CatalogState.set_edit_brand,
@@ -4936,7 +5043,11 @@ def profile_page() -> rx.Component:
                                                 rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
                                                 rx.cond(
                                                     CatalogState.admin_message != "",
-                                                    rx.text(CatalogState.admin_message, color="#4ade80", font_size="13px"),
+                                                    rx.text(
+                                                        CatalogState.admin_message,
+                                                        color=rx.cond(CatalogState.admin_error, "#f87171", "#4ade80"),
+                                                        font_size="13px",
+                                                    ),
                                                     rx.fragment(),
                                                 ),
                                                 rx.vstack(
@@ -4967,11 +5078,12 @@ def profile_page() -> rx.Component:
                                                     rx.grid(
                                                         rx.vstack(
                                                             rx.text("Categoria", color="#e4e4e7", font_size="13px", font_weight="600"),
-                                                            rx.input(
+                                                            rx.select(
+                                                                list(CATEGORIES),
                                                                 value=CatalogState.new_product_category,
                                                                 on_change=CatalogState.set_new_product_category,
-                                                                placeholder="Processadores, Placas de Vídeo...",
-                                                                width="100%", height="40px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff"
+                                                                aria_label="Categoria do novo produto",
+                                                                width="100%",
                                                             ),
                                                             width="100%", spacing="2", align="start",
                                                         ),
@@ -5399,10 +5511,10 @@ def admin_page() -> rx.Component:
 
 
 app = rx.App()
-app.add_page(index, route="/")
+app.add_page(index, route="/", on_load=CatalogState.refresh_catalog)
 app.add_page(login_page, route="/login", title="Entrar | NightFall")
 app.add_page(registration_page, route="/cadastro", title="Criar conta | NightFall")
 app.add_page(cart_page, route="/carrinho", title="Carrinho de Compras | NightFall")
 app.add_page(checkout_page, route="/pagamento", title="Pagamento | NightFall")
-app.add_page(profile_page, route="/perfil", title="Meu Perfil | NightFall")
-app.add_page(admin_page, route="/admin", title="Painel Administrativo | NightFall")
+app.add_page(profile_page, route="/perfil", title="Meu Perfil | NightFall", on_load=CatalogState.refresh_catalog)
+app.add_page(admin_page, route="/admin", title="Painel Administrativo | NightFall", on_load=CatalogState.refresh_catalog)
