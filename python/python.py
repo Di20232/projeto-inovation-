@@ -1539,10 +1539,9 @@ def product_card(product: rx.Var[Product]) -> rx.Component:
                 src=product["image_url"],
                 alt=product["name"],
                 width="100%",
-                height="220px",
+                height="150px",
                 object_fit="contain",
-                background="#0b0b12",
-                border_radius="16px",
+                border_radius="12px",
             ),
             rx.text(
                 product["category"],
@@ -1556,8 +1555,8 @@ def product_card(product: rx.Var[Product]) -> rx.Component:
             rx.text(
                 product["description"],
                 color="#a1a1aa",
-                font_size="14px",
-                line_height="1.6",
+                font_size="13px",
+                line_height="1.45",
             ),
             rx.spacer(),
             rx.text(
@@ -1568,18 +1567,17 @@ def product_card(product: rx.Var[Product]) -> rx.Component:
             ),
             width="100%",
             align="start",
-            spacing="3",
+            spacing="2",
             flex="1",
         ),
         on_click=CatalogState.open_product_details(product["name"]),
         aria_label=f"Ver detalhes de {product['name']}",
         variant="ghost",
         width="100%",
-        flex="1 1 100%",
         max_width="100%",
-        min_height="460px",
+        min_height="0",
         height="100%",
-        padding="18px",
+        padding="12px",
         color="#f5f3ff",
         text_align="left",
         white_space="normal",
@@ -2150,11 +2148,10 @@ def product_catalog() -> rx.Component:
         # Grid de produtos
         rx.cond(
             CatalogState.filtered_products.length() > 0,
-            rx.flex(
+            rx.grid(
                 rx.foreach(CatalogState.filtered_products, product_card),
-                direction="row",
-                wrap="wrap",
-                spacing="5",
+                columns="2",
+                gap="32px",
                 width="100%",
             ),
             rx.text(
