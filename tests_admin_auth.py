@@ -65,6 +65,18 @@ def test_sem_env_ninguem_e_admin():
         _restore(old)
 
 
+def test_reconhece_email_do_admin():
+    old = _with_env(ADMIN_EMAIL="Admin@Loja.com")
+    try:
+        assert admin_auth.is_env_admin_email(" admin@loja.com ")
+        assert not admin_auth.is_env_admin_email("outro@loja.com")
+        _with_env(ADMIN_EMAIL=None)
+        assert not admin_auth.is_env_admin_email("admin@loja.com")
+        assert not admin_auth.is_env_admin_email("")
+    finally:
+        _restore(old)
+
+
 def _client(handler):
     return httpx.Client(transport=httpx.MockTransport(handler))
 

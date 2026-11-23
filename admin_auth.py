@@ -57,6 +57,12 @@ def check_env_admin(email: str, password: str) -> bool:
     return verify_admin_password(password or "", admin_hash)
 
 
+def is_env_admin_email(email: str) -> bool:
+    """True se o e-mail é o ADMIN_EMAIL do .env (usado para não deixar o admin entrar como cliente)."""
+    admin_email = os.getenv("ADMIN_EMAIL", "").strip().lower()
+    return bool(admin_email) and hmac.compare_digest((email or "").strip().lower(), admin_email)
+
+
 class XanoUnavailable(Exception):
     """O Xano não respondeu de forma utilizável (rede, 404, 5xx, JSON inválido)."""
 

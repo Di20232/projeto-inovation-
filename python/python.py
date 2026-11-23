@@ -1702,7 +1702,7 @@ class LoginState(rx.State):
         self.login_succeeded = False
         self.is_submitting = True
         try:
-            from admin_auth import XanoUnavailable, check_env_admin, xano_login
+            from admin_auth import XanoUnavailable, check_env_admin, is_env_admin_email, xano_login
 
             # 1) Admin do .env (hash PBKDF2), verificado no servidor.
             is_env_admin = await asyncio.to_thread(check_env_admin, email, password)
@@ -1719,6 +1719,9 @@ class LoginState(rx.State):
 
             if is_env_admin:
                 accepted, is_admin, token = True, True, ""
+            elif xano_result is None and is_env_admin_email(email):
+                # E-mail do admin com senha errada: recusa, em vez de entrar calado como cliente.
+                accepted, is_admin, token = False, False, ""
             elif xano_result is not None:
                 accepted, is_admin, token = xano_result.ok, xano_result.is_admin, xano_result.token
             else:
