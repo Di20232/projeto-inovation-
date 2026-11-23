@@ -903,7 +903,8 @@ class CatalogState(rx.State):
         from order_persistence import send_order_to_xano
 
         send_order_to_xano(order_data)
-        auth_state.orders = list(auth_state.orders) + [
+        # Mais recente primeiro, igual ao histórico carregado do orders_db.json.
+        auth_state.orders = [
             {
                 "id": order_id,
                 "date": order_data["date"],
@@ -911,7 +912,7 @@ class CatalogState(rx.State):
                 "total_display": self.cart_final_total_display,
                 "status": status_text,
             }
-        ]
+        ] + list(auth_state.orders)
         self.last_order_id = order_id
         self.last_order_total_display = self.cart_final_total_display
         self.last_order_status = status_text
@@ -1632,8 +1633,30 @@ class AuthState(rx.State):
             self.profile_tab = "dados"
         self.user_name = ""
         self.user_email = ""
+        self.orders = []
         self.logout_dialog_open = False
         return rx.redirect("/")
+
+    @rx.event
+    def load_my_orders(self):
+        """Evento (on_load do /perfil) que recarrega "Meus Pedidos"."""
+        self._refresh_orders()
+
+    def _refresh_orders(self):
+        """Carrega "Meus Pedidos" do orders_db.json pelo e-mail do cliente logado.
+
+        Pedidos que estão só na sessão (por exemplo, aceitos pelo Xano e não
+        gravados no arquivo local) continuam na lista.
+        """
+        if not self.is_logged_in or not self.user_email:
+            self.orders = []
+            return
+        from order_persistence import load_orders_for_email
+
+        saved = load_orders_for_email(self.user_email)
+        saved_ids = {order["id"] for order in saved}
+        session_only = [o for o in self.orders if o.get("id") not in saved_ids]
+        self.orders = session_only + saved
 
 class LoginState(rx.State):
     email: str = ""
@@ -1681,6 +1704,8 @@ class LoginState(rx.State):
                 else:
                     auth_state.is_admin = False
                 auth_state.user_email = email
+                auth_state.orders = []
+                auth_state._refresh_orders()
                 name_part = email.split("@")[0]
                 auth_state.user_name = name_part.capitalize()
                 if not auth_state.user_cpf:
@@ -1888,6 +1913,8 @@ class RegistrationState(rx.State):
                 auth_state.is_logged_in = True
                 auth_state.user_name = name
                 auth_state.user_email = email
+                auth_state.orders = []
+                auth_state._refresh_orders()
                 auth_state.user_cpf = format_cpf(cpf)
                 auth_state.user_birth_date = format_birth_date(birth_date)
 
@@ -5681,5 +5708,10 @@ app.add_page(login_page, route="/login", title="Entrar | NightFall")
 app.add_page(registration_page, route="/cadastro", title="Criar conta | NightFall")
 app.add_page(cart_page, route="/carrinho", title="Carrinho de Compras | NightFall")
 app.add_page(checkout_page, route="/pagamento", title="Pagamento | NightFall")
-app.add_page(profile_page, route="/perfil", title="Meu Perfil | NightFall", on_load=CatalogState.refresh_catalog)
+app.add_page(
+    profile_page,
+    route="/perfil",
+    title="Meu Perfil | NightFall",
+    on_load=[CatalogState.refresh_catalog, AuthState.load_my_orders],
+)
 app.add_page(admin_page, route="/admin", title="Painel Administrativo | NightFall", on_load=CatalogState.refresh_catalog)
