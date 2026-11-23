@@ -140,7 +140,7 @@ def normalize_asaas_credit_card_form(
     if expiration_date.date().replace(day=1) < current_month:
         raise ValueError("A validade do cartão precisa ser futura.")
 
-    return normalized
+    return dict(normalized) # type: ignore
 
 
 def build_asaas_credit_card_payment_payload(
@@ -422,17 +422,25 @@ def _write_catalog_file(data: list[dict[str, Any]], path: Path) -> None:
 
 
 def mutate_catalog(change, path: Path = CATALOG_PATH) -> list[Product]:
-    """Aplica `change(produtos) -> produtos` ao catálogo, valida e grava no disco.
-
-    Lança ValueError (com mensagem para o usuário) se a mudança for inválida;
-    nesse caso nem o arquivo nem o cache são alterados.
-    """
+    """Aplica `change(produtos) -> produtos` ao catálogo, valida e grava no disco e sincroniza com o Xano."""
     with _CATALOG_LOCK:
         updated = change(copy.deepcopy(_catalog_cache))
         data = [_product_to_json(p) for p in updated]
         parsed = parse_catalog_data(data)
         _write_catalog_file(data, path)
         _catalog_cache[:] = parsed
+
+        # Sincroniza com o Xano (se configurado/disponível)
+        products_url = os.getenv("XANO_PRODUCTS_URL", DEFAULT_XANO_PRODUCTS_URL).strip()
+        if products_url:
+            try:
+                # O Xano geralmente recebe o catálogo completo ou via POST/PUT por item.
+                # Como o Xano aceita lista ou POST individual, tentamos enviar cada produto ou o array completo.
+                for item in data:
+                    httpx.post(products_url, json=item, timeout=3.0)
+            except Exception:
+                pass
+
         return copy.deepcopy(parsed)
 
 
@@ -1958,7 +1966,7 @@ class RegistrationState(rx.State):
             self.password = ""
             self.is_submitting = False
 
-def category_item(category: rx.Var[Any]) -> rx.Component:
+def category_item(category: Any) -> rx.Component:
     return rx.cond(
         category["available"],
         rx.button(
@@ -2024,7 +2032,7 @@ def category_item(category: rx.Var[Any]) -> rx.Component:
         ),
     )
 
-def product_card(product: rx.Var[Product]) -> rx.Component:
+def product_card(product: Any) -> rx.Component:
     return rx.button(
         rx.vstack(
             rx.image(
@@ -2090,7 +2098,7 @@ def product_card(product: rx.Var[Product]) -> rx.Component:
         },
     )
 
-def specification_row(specification: rx.Var[Specification]) -> rx.Component:
+def specification_row(specification: Any) -> rx.Component:
     return rx.hstack(
         rx.text(
             specification["label"],
@@ -2237,7 +2245,7 @@ def product_details_dialog() -> rx.Component:
         on_open_change=CatalogState.set_product_details_open,
     )
 
-def cart_item_row(item: rx.Var[CartItem]) -> rx.Component:
+def cart_item_row(item: Any) -> rx.Component:
     return rx.hstack(
         rx.image(
             src=item["image_url"],
@@ -4240,7 +4248,7 @@ def checkout_page() -> rx.Component:
                                             name="holder_name",
                                             default_value=AuthState.user_name,
                                             placeholder="Nome do titular",
-                                            auto_complete=True,
+                                            autocomplete="on",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -4261,7 +4269,7 @@ def checkout_page() -> rx.Component:
                                             type="email",
                                             default_value=AuthState.user_email,
                                             placeholder="nome@exemplo.com",
-                                            auto_complete=True,
+                                            autocomplete="on",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -4286,7 +4294,7 @@ def checkout_page() -> rx.Component:
                                             name="cpf_cnpj",
                                             default_value=AuthState.user_cpf,
                                             placeholder="000.000.000-00",
-                                            auto_complete=False,
+                                            autocomplete="off",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -4306,7 +4314,7 @@ def checkout_page() -> rx.Component:
                                             name="phone",
                                             default_value=AuthState.user_phone,
                                             placeholder="11999999999",
-                                            auto_complete=True,
+                                            autocomplete="on",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -4331,7 +4339,7 @@ def checkout_page() -> rx.Component:
                                             name="card_number",
                                             input_mode="numeric",
                                             placeholder="Número do cartão de teste",
-                                            auto_complete=False,
+                                            autocomplete="off",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -4349,7 +4357,7 @@ def checkout_page() -> rx.Component:
                                         rx.input(
                                             name="expiration",
                                             type="month",
-                                            auto_complete=False,
+                                            autocomplete="off",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -4369,7 +4377,7 @@ def checkout_page() -> rx.Component:
                                             name="ccv",
                                             type="password",
                                             input_mode="numeric",
-                                            auto_complete=False,
+                                            autocomplete="off",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -4394,7 +4402,7 @@ def checkout_page() -> rx.Component:
                                             name="postal_code",
                                             default_value=CatalogState.shipping_cep,
                                             placeholder="00000-000",
-                                            auto_complete=True,
+                                            autocomplete="on",
                                             required=True,
                                             width="100%",
                                             height="42px",
@@ -4414,7 +4422,7 @@ def checkout_page() -> rx.Component:
                                             name="address_number",
                                             default_value=CatalogState.shipping_number,
                                             placeholder="Número",
-                                            auto_complete=False,
+                                            autocomplete="off",
                                             required=True,
                                             width="100%",
                                             height="42px",

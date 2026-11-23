@@ -1,0 +1,7 @@
+schema: 1
+name: mensagem-edicao-produto
+description: Mensagem curta "Produto atualizado." ao salvar a edição de um produto
+status: completed
+created: 2026-11-23
+dependencies: 
+  - edicao-produto-painel
