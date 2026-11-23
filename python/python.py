@@ -554,7 +554,129 @@ class CatalogState(rx.State):
                     if not brand_found:
                         p["specifications"].append({"label": "Marca", "value": value})
         self.products = list(self.products)
-        self.admin_message = "Produto atualizado."
+
+    # --- Edição de produto (painel admin) ---
+    edit_dialog_open: bool = False
+    edit_original_name: str = ""
+    edit_name: str = ""
+    edit_price: str = ""
+    edit_category: str = ""
+    edit_brand: str = ""
+    edit_description: str = ""
+    edit_image_url: str = ""
+    edit_error: str = ""
+
+    @rx.event
+    def set_edit_name(self, val: str):
+        self.edit_name = val
+
+    @rx.event
+    def set_edit_price(self, val: str):
+        self.edit_price = val
+
+    @rx.event
+    def set_edit_category(self, val: str):
+        self.edit_category = val
+
+    @rx.event
+    def set_edit_brand(self, val: str):
+        self.edit_brand = val
+
+    @rx.event
+    def set_edit_description(self, val: str):
+        self.edit_description = val
+
+    @rx.event
+    def set_edit_image_url(self, val: str):
+        self.edit_image_url = val
+
+    @rx.event
+    def set_edit_dialog_open(self, is_open: bool):
+        self.edit_dialog_open = is_open
+        if not is_open:
+            self.edit_error = ""
+
+    @rx.event
+    def open_edit_product(self, product_name: str):
+        product = next((p for p in self.products if p["name"] == product_name), None)
+        if product is None:
+            self.admin_message = f"Produto '{product_name}' não encontrado."
+            return
+        brand = next(
+            (s["value"] for s in product["specifications"] if s["label"].lower() == "marca"),
+            "",
+        )
+        self.edit_original_name = product["name"]
+        self.edit_name = product["name"]
+        self.edit_price = f"{float(product['price']):.2f}"
+        self.edit_category = product["category"]
+        self.edit_brand = brand
+        self.edit_description = product["description"]
+        self.edit_image_url = product["image_url"]
+        self.edit_error = ""
+        self.edit_dialog_open = True
+
+    @rx.event
+    def save_edited_product(self):
+        name = self.edit_name.strip()
+        price_str = self.edit_price.strip().replace(",", ".")
+        category = self.edit_category.strip()
+        brand = self.edit_brand.strip()
+
+        if not name or not price_str or not category:
+            self.edit_error = "Preencha nome, preço e categoria."
+            return
+        try:
+            price = float(price_str)
+        except ValueError:
+            self.edit_error = "Preço inválido. Use números, ex.: 5499.90"
+            return
+        if price < 0:
+            self.edit_error = "O preço não pode ser negativo."
+            return
+        original = self.edit_original_name
+        if name != original and any(p["name"] == name for p in self.products):
+            self.edit_error = f"Já existe um produto chamado '{name}'."
+            return
+
+        formatted = f"{Decimal(str(price)):,.2f}"
+        formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+        price_display = f"R$ {formatted}"
+
+        new_image_url = self.edit_image_url.strip()
+        updated = False
+        for p in self.products:
+            if p["name"] != original:
+                continue
+            p["name"] = name
+            p["price"] = price
+            p["price_display"] = price_display
+            p["category"] = category
+            p["description"] = self.edit_description.strip()
+            p["image_url"] = new_image_url
+            specs = [s for s in p["specifications"] if s["label"].lower() != "marca"]
+            if brand:
+                specs.insert(0, {"label": "Marca", "value": brand})
+            p["specifications"] = specs
+            updated = True
+            break
+        if not updated:
+            self.edit_error = f"Produto '{original}' não encontrado."
+            return
+        self.products = list(self.products)
+
+        # Mantém o carrinho coerente com o produto editado
+        for item in self.cart_items:
+            if item["name"] == original:
+                item["name"] = name
+                item["price"] = price
+                item["price_display"] = price_display
+                item["image_url"] = new_image_url
+        self.cart_items = list(self.cart_items)
+
+        self.edit_dialog_open = False
+        self.edit_error = ""
+        self.admin_message = f"Produto '{name}' atualizado com sucesso!"
 
     @rx.event
     def set_coupon_code(self, code: str):
@@ -4186,12 +4308,22 @@ def admin_product_row(prod: rx.Var[Product]) -> rx.Component:
             align="start",
         ),
         rx.spacer(),
-        rx.button(
-            "Excluir",
-            on_click=CatalogState.delete_product(prod["name"]),
-            color_scheme="red",
-            size="1",
-            variant="soft",
+        rx.hstack(
+            rx.button(
+                "Editar",
+                on_click=CatalogState.open_edit_product(prod["name"]),
+                color_scheme="purple",
+                size="1",
+                variant="soft",
+            ),
+            rx.button(
+                "Excluir",
+                on_click=CatalogState.delete_product(prod["name"]),
+                color_scheme="red",
+                size="1",
+                variant="soft",
+            ),
+            spacing="2",
         ),
         width="100%",
         padding="12px",
@@ -4201,6 +4333,92 @@ def admin_product_row(prod: rx.Var[Product]) -> rx.Component:
         align="center",
         justify="between",
     )
+
+def _edit_field(label: str, control: rx.Component) -> rx.Component:
+    return rx.vstack(
+        rx.text(label, color="#e4e4e7", font_size="13px", font_weight="600"),
+        control,
+        width="100%", spacing="2", align="start",
+    )
+
+
+_EDIT_INPUT_STYLE = dict(
+    width="100%", height="40px", background="#11111a",
+    border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff",
+)
+
+
+def admin_edit_product_dialog() -> rx.Component:
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.vstack(
+                rx.dialog.title("Editar Produto", color="#f5f3ff", font_size="20px", font_weight="700"),
+                rx.text(
+                    "Alterando: " + CatalogState.edit_original_name,
+                    color="#a1a1aa", font_size="13px",
+                ),
+                rx.cond(
+                    CatalogState.edit_image_url != "",
+                    rx.image(
+                        src=CatalogState.edit_image_url,
+                        alt="Pré-visualização da foto",
+                        width="100%", height="140px", object_fit="contain",
+                        background="#0b0b12", border_radius="10px",
+                    ),
+                    rx.fragment(),
+                ),
+                rx.grid(
+                    _edit_field("Nome do Produto", rx.input(
+                        value=CatalogState.edit_name, on_change=CatalogState.set_edit_name,
+                        aria_label="Nome do produto", **_EDIT_INPUT_STYLE,
+                    )),
+                    _edit_field("Preço (R$)", rx.input(
+                        value=CatalogState.edit_price, on_change=CatalogState.set_edit_price,
+                        aria_label="Preço do produto", **_EDIT_INPUT_STYLE,
+                    )),
+                    _edit_field("Categoria", rx.input(
+                        value=CatalogState.edit_category, on_change=CatalogState.set_edit_category,
+                        aria_label="Categoria do produto", **_EDIT_INPUT_STYLE,
+                    )),
+                    _edit_field("Marca", rx.input(
+                        value=CatalogState.edit_brand, on_change=CatalogState.set_edit_brand,
+                        aria_label="Marca do produto", **_EDIT_INPUT_STYLE,
+                    )),
+                    columns=rx.breakpoints(initial="1", sm="2"), spacing="3", width="100%",
+                ),
+                _edit_field("Descrição", rx.text_area(
+                    value=CatalogState.edit_description, on_change=CatalogState.set_edit_description,
+                    aria_label="Descrição do produto",
+                    width="100%", height="90px", background="#11111a",
+                    border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff",
+                )),
+                _edit_field("URL da Foto do Produto", rx.input(
+                    value=CatalogState.edit_image_url, on_change=CatalogState.set_edit_image_url,
+                    aria_label="URL da foto do produto", placeholder="https://exemplo.com/imagem.png",
+                    **_EDIT_INPUT_STYLE,
+                )),
+                rx.cond(
+                    CatalogState.edit_error != "",
+                    rx.text(CatalogState.edit_error, color="#f87171", font_size="13px"),
+                    rx.fragment(),
+                ),
+                rx.hstack(
+                    rx.dialog.close(
+                        rx.button("Cancelar", variant="soft", color_scheme="gray"),
+                    ),
+                    rx.button("Salvar Alterações", on_click=CatalogState.save_edited_product, color_scheme="purple"),
+                    justify="end", spacing="3", width="100%",
+                ),
+                spacing="4", width="100%",
+            ),
+            background="#161522",
+            border="1px solid rgba(167, 139, 250, 0.3)",
+            max_width="560px",
+        ),
+        open=CatalogState.edit_dialog_open,
+        on_open_change=CatalogState.set_edit_dialog_open,
+    )
+
 
 def address_row(addr: rx.Var[AddressItem]) -> rx.Component:
     return rx.hstack(
@@ -4803,6 +5021,7 @@ def profile_page() -> rx.Component:
                                                     rx.foreach(CatalogState.products, admin_product_row),
                                                     width="100%", spacing="2", max_height="400px", overflow_y="auto",
                                                 ),
+                                                admin_edit_product_dialog(),
                                                 width="100%", spacing="4",
                                             ),
                                             rx.fragment(),
