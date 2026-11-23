@@ -77,6 +77,19 @@ class AsaasCreditCardFormData(TypedDict):
 
 
 ASAAS_API_BASE_URL = "https://api-sandbox.asaas.com/v3"
+LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "::1"}
+
+
+def simulated_payments_enabled() -> bool:
+    """Modo simulado: sem ASAAS_API_KEY, o checkout cria o pedido sem cobrar.
+
+    Serve só para desenvolvimento local. Pode ser desligado com
+    NIGHTFALL_SIMULATED_PAYMENTS=0. O finalize_order ainda exige que o acesso
+    venha de localhost antes de usar este modo.
+    """
+    if os.getenv("ASAAS_API_KEY", "").strip():
+        return False
+    return os.getenv("NIGHTFALL_SIMULATED_PAYMENTS", "1").strip() != "0"
 
 
 def _form_text(form_data: dict[str, Any], field: str) -> str:
@@ -505,6 +518,7 @@ class CatalogState(rx.State):
 
     @rx.event
     def add_to_cart(self, product_name: str):
+        self.last_order_id = ""
         product = next(
             (item for item in self.products if item["name"] == product_name),
             None,
@@ -855,6 +869,66 @@ class CatalogState(rx.State):
     payment_message: str = ""
     is_processing_payment: bool = False
     payment_reference: str = ""
+    payments_simulated: bool = simulated_payments_enabled()
+    last_order_id: str = ""
+    last_order_total_display: str = ""
+    last_order_status: str = ""
+
+    def _register_order(
+        self,
+        auth_state: "AuthState",
+        *,
+        status_text: str,
+        payment_id: str,
+    ) -> str:
+        """Grava o pedido (Xano ou orders_db.json), põe no histórico do cliente e limpa o carrinho.
+
+        Devolve o número do pedido mostrado ao cliente.
+        """
+        order_id = f"#NF-{self.payment_reference.removeprefix('NF-')[:8].upper()}"
+        order_data = {
+            "id": order_id,
+            "date": datetime.now().strftime("%d/%m/%Y"),
+            "user_email": auth_state.user_email,
+            "items": list(self.cart_items),
+            "subtotal": self.cart_total,
+            "discount": self.discount_amount,
+            "shipping": self.shipping_cost,
+            "total": self.cart_final_total,
+            "total_display": self.cart_final_total_display,
+            "status": status_text,
+            "payment_method": self.payment_method,
+            "asaas_payment_id": payment_id,
+        }
+        from order_persistence import send_order_to_xano
+
+        send_order_to_xano(order_data)
+        auth_state.orders = list(auth_state.orders) + [
+            {
+                "id": order_id,
+                "date": order_data["date"],
+                "items_count": sum(item["quantity"] for item in self.cart_items),
+                "total_display": self.cart_final_total_display,
+                "status": status_text,
+            }
+        ]
+        self.last_order_id = order_id
+        self.last_order_total_display = self.cart_final_total_display
+        self.last_order_status = status_text
+        self.payment_reference = ""
+        self.cart_items = []
+        return order_id
+
+    @rx.event
+    def clear_last_order(self):
+        self.last_order_id = ""
+
+    @rx.event
+    async def go_to_my_orders(self):
+        auth_state = await self.get_state(AuthState)
+        auth_state.profile_tab = "pedidos"
+        self.last_order_id = ""
+        return rx.redirect("/perfil")
 
     @rx.event
     async def proceed_to_checkout(self):
@@ -917,6 +991,9 @@ class CatalogState(rx.State):
 
     @rx.event
     async def finalize_order(self, form_data: dict[str, Any]):
+        if simulated_payments_enabled():
+            return await self._finalize_simulated_order()
+
         if self.payment_method != "credit_card":
             self.payment_message = "Pix e boleto ainda não estão integrados ao Asaas."
             return
@@ -1081,38 +1158,51 @@ class CatalogState(rx.State):
             status_text = status if isinstance(status, str) else "Não informado"
 
             # Registra o pedido no histórico do usuário e na persistência local/Xano.
-            order_id = f"#NF-{self.payment_reference.removeprefix('NF-')[:8].upper()}"
-            order_data = {
-                "id": order_id,
-                "date": datetime.now().strftime("%d/%m/%Y"),
-                "items": list(self.cart_items),
-                "subtotal": self.cart_total,
-                "discount": self.discount_amount,
-                "shipping": self.shipping_cost,
-                "total": self.cart_final_total,
-                "total_display": self.cart_final_total_display,
-                "status": status_text,
-                "payment_method": self.payment_method,
-                "asaas_payment_id": payment["id"],
-            }
-            from order_persistence import send_order_to_xano
-
-            send_order_to_xano(order_data)
-            auth_state.orders = list(auth_state.orders) + [
-                {
-                    "id": order_id,
-                    "date": order_data["date"],
-                    "items_count": sum(item["quantity"] for item in self.cart_items),
-                    "total_display": self.cart_final_total_display,
-                    "status": status_text,
-                }
-            ]
-
-            self.payment_reference = ""
-            self.cart_items = []
+            order_id = self._register_order(
+                auth_state, status_text=status_text, payment_id=payment["id"]
+            )
             return rx.toast.success(
-                "Cobrança registrada no Asaas Sandbox",
-                description=f"ID: {payment['id']} · Status: {status_text}",
+                f"Pedido {order_id} realizado!",
+                description=f"Cobrança Asaas: {payment['id']} · Status: {status_text}",
+                duration=10000,
+            )
+        finally:
+            self.is_processing_payment = False
+
+    async def _finalize_simulated_order(self):
+        """Fecha o pedido sem cobrar ninguém (só desenvolvimento local, sem chave Asaas)."""
+        if self.is_processing_payment:
+            return
+        self.is_processing_payment = True
+        self.payment_message = ""
+        try:
+            auth_state = await self.get_state(AuthState)
+            if not auth_state.is_logged_in:
+                self.payment_message = "Faça login para continuar com o pedido."
+                return rx.redirect("/login")
+            if not self.cart_items:
+                self.payment_message = "Seu carrinho está vazio."
+                return
+            origin_host = urlparse(self.router.headers.origin).hostname
+            if origin_host not in LOCAL_HOSTNAMES:
+                self.payment_message = (
+                    "Pagamento indisponível: configure ASAAS_API_KEY. "
+                    "O modo simulado só funciona em localhost."
+                )
+                return
+            if Decimal(str(self.cart_final_total)) <= 0:
+                self.payment_message = "O total do pedido precisa ser maior que zero."
+                return
+
+            self.payment_reference = f"NF-{uuid4().hex}"
+            order_id = self._register_order(
+                auth_state,
+                status_text="Simulado (sem cobrança)",
+                payment_id="SIMULADO",
+            )
+            return rx.toast.success(
+                f"Pedido {order_id} realizado!",
+                description="Modo simulado: nenhum pagamento foi processado.",
                 duration=10000,
             )
         finally:
@@ -3778,6 +3868,60 @@ def index() -> rx.Component:
         background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
     )
 
+def order_confirmation_banner() -> rx.Component:
+    """Quadro de confirmação com o número do pedido, mostrado depois de finalizar."""
+    return rx.cond(
+        CatalogState.last_order_id != "",
+        rx.vstack(
+            rx.hstack(
+                rx.icon("circle_check", size=28, color="#4ade80"),
+                rx.heading("Pedido realizado!", size="6", color="#f5f3ff"),
+                spacing="3",
+                align="center",
+            ),
+            rx.text("Número do pedido", color="#a1a1aa", font_size="13px"),
+            rx.text(
+                CatalogState.last_order_id,
+                color="#e9d5ff",
+                font_size="28px",
+                font_weight="800",
+                letter_spacing="0.04em",
+                id="numero-pedido",
+            ),
+            rx.hstack(
+                rx.text("Total: " + CatalogState.last_order_total_display, color="#f5f3ff", font_size="14px"),
+                rx.text("•", color="#a1a1aa"),
+                rx.text("Status: " + CatalogState.last_order_status, color="#f5f3ff", font_size="14px"),
+                spacing="2",
+                wrap="wrap",
+            ),
+            rx.text(
+                "Guarde este número: ele também aparece em Meus Pedidos.",
+                color="#a1a1aa",
+                font_size="13px",
+            ),
+            rx.hstack(
+                rx.button("Ver em Meus Pedidos", on_click=CatalogState.go_to_my_orders, color_scheme="purple"),
+                rx.button(
+                    "Continuar comprando",
+                    on_click=[CatalogState.clear_last_order, rx.redirect("/")],
+                    variant="soft",
+                    color_scheme="gray",
+                ),
+                spacing="3",
+                wrap="wrap",
+            ),
+            width="100%",
+            padding="24px",
+            spacing="3",
+            background="rgba(74, 222, 128, 0.06)",
+            border="1px solid rgba(74, 222, 128, 0.35)",
+            border_radius="20px",
+        ),
+        rx.fragment(),
+    )
+
+
 def checkout_page() -> rx.Component:
     return rx.box(
         rx.vstack(
@@ -3827,6 +3971,8 @@ def checkout_page() -> rx.Component:
             # Content / Auth Guard
             rx.cond(
                 AuthState.is_logged_in,
+                rx.vstack(
+                order_confirmation_banner(),
                 rx.form(
                     rx.flex(
                     # Left: Form (Address & Payment)
@@ -3999,6 +4145,16 @@ def checkout_page() -> rx.Component:
                             spacing="3",
                         ),
                         # Conditional Payment Inputs
+                        rx.cond(
+                            CatalogState.payments_simulated,
+                            rx.callout(
+                                "Modo simulado (desenvolvimento local, sem ASAAS_API_KEY): "
+                                "o pedido é criado normalmente, mas nenhum pagamento é processado "
+                                "e nenhum dado de cartão é pedido.",
+                                icon="info",
+                                color_scheme="amber",
+                                width="100%",
+                            ),
                         rx.cond(
                             CatalogState.payment_method == "credit_card",
                             rx.vstack(
@@ -4264,6 +4420,7 @@ def checkout_page() -> rx.Component:
                                 ),
                             ),
                         ),
+                        ),
                         width="100%",
                         flex="2",
                         spacing="4",
@@ -4307,9 +4464,13 @@ def checkout_page() -> rx.Component:
                         ),
                         rx.button(
                             rx.cond(
-                                CatalogState.payment_method == "credit_card",
-                                "Criar cobrança no Asaas Sandbox",
-                                "Confirmar Pedido",
+                                CatalogState.payments_simulated,
+                                "Confirmar Pedido (simulado)",
+                                rx.cond(
+                                    CatalogState.payment_method == "credit_card",
+                                    "Criar cobrança no Asaas Sandbox",
+                                    "Confirmar Pedido",
+                                ),
                             ),
                             type="submit",
                             color_scheme="purple",
@@ -4318,8 +4479,9 @@ def checkout_page() -> rx.Component:
                             font_weight="700",
                             margin_top="16px",
                             disabled=rx.cond(
-                                CatalogState.payment_method == "credit_card",
-                                CatalogState.is_processing_payment,
+                                CatalogState.payments_simulated
+                                | (CatalogState.payment_method == "credit_card"),
+                                CatalogState.is_processing_payment | (CatalogState.cart_count == 0),
                                 True,
                             ),
                         ),
@@ -4351,6 +4513,9 @@ def checkout_page() -> rx.Component:
                     on_submit=CatalogState.finalize_order,
                     reset_on_submit=True,
                     ),
+                width="100%",
+                spacing="5",
+                ),
             # Not logged in view
             rx.vstack(
                 rx.box(
@@ -4798,7 +4963,7 @@ def profile_page() -> rx.Component:
                                                     rx.vstack(
                                                         rx.text(order["id"], color="#f5f3ff", font_weight="700", font_size="15px"),
                                                         rx.text(
-                                                            "Data: " + order["date"].to_string() + " • " + order["items_count"].to_string() + " item(ns)",
+                                                            "Data: " + order["date"].to(str) + " • " + order["items_count"].to_string() + " item(ns)",
                                                             color="#a1a1aa",
                                                             font_size="13px"
                                                         ),
