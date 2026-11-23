@@ -1,0 +1,7 @@
+schema: 1
+name: catalogo-persistente
+description: Gravar no catalog.json o cadastro, a edição e a exclusão de produtos, exigindo admin no servidor
+status: completed
+created: 2026-11-23
+dependencies: 
+  - edicao-produto-painel
