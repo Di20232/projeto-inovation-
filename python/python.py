@@ -4,13 +4,19 @@ import asyncio
 import json
 import math
 import os
+from datetime import date, datetime
 from decimal import Decimal
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, TypedDict
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import httpx
 import reflex as rx
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 CATEGORIES = ("Computadores", "Componentes", "Periféricos", "Acessórios")
 CATALOG_PATH = Path(__file__).with_name("catalog.json")
@@ -53,6 +59,189 @@ class AddressItem(TypedDict):
     state: str
     cep: str
     is_main: bool
+
+
+class AsaasCreditCardFormData(TypedDict):
+    holder_name: str
+    holder_email: str
+    cpf_cnpj: str
+    postal_code: str
+    address_number: str
+    phone: str
+    card_number: str
+    expiration: str
+    ccv: str
+
+
+ASAAS_API_BASE_URL = "https://api-sandbox.asaas.com/v3"
+
+
+def _form_text(form_data: dict[str, Any], field: str) -> str:
+    value = form_data.get(field, "")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _digits(value: str) -> str:
+    return "".join(character for character in value if character.isdigit())
+
+
+def normalize_asaas_credit_card_form(
+    form_data: dict[str, Any],
+) -> AsaasCreditCardFormData:
+    normalized = {
+        "holder_name": _form_text(form_data, "holder_name"),
+        "holder_email": _form_text(form_data, "holder_email").lower(),
+        "cpf_cnpj": _digits(_form_text(form_data, "cpf_cnpj")),
+        "postal_code": _digits(_form_text(form_data, "postal_code")),
+        "address_number": _form_text(form_data, "address_number"),
+        "phone": _digits(_form_text(form_data, "phone")),
+        "card_number": _digits(_form_text(form_data, "card_number")),
+        "expiration": _form_text(form_data, "expiration"),
+        "ccv": _digits(_form_text(form_data, "ccv")),
+    }
+
+    if not normalized["holder_name"] or "@" not in normalized["holder_email"]:
+        raise ValueError("Preencha o nome e o e-mail do titular do cartão.")
+    if not normalized["address_number"]:
+        raise ValueError("Informe o número do endereço de cobrança.")
+    if not validate_cpf(normalized["cpf_cnpj"]):
+        raise ValueError("Informe um CPF válido para o titular do cartão.")
+    if len(normalized["postal_code"]) != 8:
+        raise ValueError("Informe um CEP válido para o titular do cartão.")
+    if len(normalized["phone"]) not in {10, 11}:
+        raise ValueError("Informe um telefone com DDD para o titular do cartão.")
+    if not 13 <= len(normalized["card_number"]) <= 19:
+        raise ValueError("Confira o número do cartão de teste.")
+    if len(normalized["ccv"]) not in {3, 4}:
+        raise ValueError("Confira o código de segurança do cartão de teste.")
+
+    try:
+        expiration_date = datetime.strptime(normalized["expiration"], "%Y-%m")
+    except ValueError as error:
+        raise ValueError("Informe a validade do cartão.") from error
+
+    current_month = date.today().replace(day=1)
+    if expiration_date.date().replace(day=1) < current_month:
+        raise ValueError("A validade do cartão precisa ser futura.")
+
+    return normalized
+
+
+def build_asaas_credit_card_payment_payload(
+    total: Decimal,
+    external_reference: str,
+    customer_id: str,
+    remote_ip: str,
+    form_data: AsaasCreditCardFormData,
+) -> dict[str, Any]:
+    expiration = datetime.strptime(form_data["expiration"], "%Y-%m")
+    return {
+        "customer": customer_id,
+        "billingType": "CREDIT_CARD",
+        "value": float(total),
+        "dueDate": date.today().isoformat(),
+        "externalReference": external_reference,
+        "creditCard": {
+            "holderName": form_data["holder_name"],
+            "number": form_data["card_number"],
+            "expiryMonth": expiration.strftime("%m"),
+            "expiryYear": expiration.strftime("%Y"),
+            "ccv": form_data["ccv"],
+        },
+        "creditCardHolderInfo": {
+            "name": form_data["holder_name"],
+            "email": form_data["holder_email"],
+            "cpfCnpj": form_data["cpf_cnpj"],
+            "postalCode": form_data["postal_code"],
+            "addressNumber": form_data["address_number"],
+            "phone": form_data["phone"],
+        },
+        "remoteIp": remote_ip,
+    }
+
+
+async def find_asaas_customer(
+    client: httpx.AsyncClient,
+    headers: dict[str, str],
+    form_data: AsaasCreditCardFormData,
+) -> str | None:
+    response = await client.get(
+        f"{ASAAS_API_BASE_URL}/customers",
+        headers=headers,
+        params={"email": form_data["holder_email"], "limit": 100},
+    )
+    response.raise_for_status()
+    result = response.json()
+    customers = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(customers, list):
+        raise ValueError("O Asaas retornou uma lista de clientes inválida.")
+
+    for customer in customers:
+        if not isinstance(customer, dict):
+            continue
+        customer_email = customer.get("email")
+        if (
+            isinstance(customer_email, str)
+            and customer_email.strip().lower()
+            == form_data["holder_email"]
+            and _digits(str(customer.get("cpfCnpj", "")))
+            == form_data["cpf_cnpj"]
+            and isinstance(customer.get("id"), str)
+        ):
+            return customer["id"]
+
+    return None
+
+
+async def create_asaas_customer(
+    client: httpx.AsyncClient,
+    headers: dict[str, str],
+    form_data: AsaasCreditCardFormData,
+) -> str:
+    response = await client.post(
+        f"{ASAAS_API_BASE_URL}/customers",
+        headers=headers,
+        json={
+            "name": form_data["holder_name"],
+            "email": form_data["holder_email"],
+            "cpfCnpj": form_data["cpf_cnpj"],
+            "phone": form_data["phone"],
+            "postalCode": form_data["postal_code"],
+            "addressNumber": form_data["address_number"],
+        },
+    )
+    response.raise_for_status()
+    customer = response.json()
+    if not isinstance(customer, dict) or not isinstance(customer.get("id"), str):
+        raise ValueError("O Asaas não retornou o identificador do cliente.")
+    return customer["id"]
+
+
+async def find_asaas_payment(
+    client: httpx.AsyncClient,
+    headers: dict[str, str],
+    external_reference: str,
+) -> dict[str, Any] | None:
+    response = await client.get(
+        f"{ASAAS_API_BASE_URL}/payments",
+        headers=headers,
+        params={"externalReference": external_reference, "limit": 1},
+    )
+    response.raise_for_status()
+    result = response.json()
+    payments = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(payments, list):
+        raise ValueError("O Asaas retornou uma lista de cobranças inválida.")
+    return next(
+        (
+            payment
+            for payment in payments
+            if isinstance(payment, dict)
+            and payment.get("externalReference") == external_reference
+        ),
+        None,
+    )
+
 
 def parse_catalog_data(data: list[Any]) -> list[Product]:
     if not isinstance(data, list):
@@ -438,12 +627,9 @@ class CatalogState(rx.State):
     shipping_city: str = ""
     shipping_state: str = ""
     payment_method: str = "credit_card"
-    card_number: str = ""
-    card_name: str = ""
-    card_expiry: str = ""
-    card_cvv: str = ""
-    order_success: bool = False
-    order_id: str = ""
+    payment_message: str = ""
+    is_processing_payment: bool = False
+    payment_reference: str = ""
 
     @rx.event
     async def proceed_to_checkout(self):
@@ -502,29 +688,210 @@ class CatalogState(rx.State):
     @rx.event
     def set_payment_method(self, val: str):
         self.payment_method = val
+        self.payment_message = ""
 
     @rx.event
-    def set_card_number(self, val: str):
-        self.card_number = val
+    async def finalize_order(self, form_data: dict[str, Any]):
+        if self.payment_method != "credit_card":
+            self.payment_message = "Pix e boleto ainda não estão integrados ao Asaas."
+            return
 
-    @rx.event
-    def set_card_name(self, val: str):
-        self.card_name = val
+        if self.is_processing_payment:
+            return
 
-    @rx.event
-    def set_card_expiry(self, val: str):
-        self.card_expiry = val
+        self.is_processing_payment = True
+        self.payment_message = ""
+        payment_request_started = False
+        try:
+            auth_state = await self.get_state(AuthState)
+            if not auth_state.is_logged_in:
+                self.payment_message = "Faça login para continuar com o pagamento."
+                return rx.redirect("/login")
 
-    @rx.event
-    def set_card_cvv(self, val: str):
-        self.card_cvv = val
+            if not self.cart_items:
+                self.payment_message = "Seu carrinho está vazio."
+                return
 
-    @rx.event
-    def finalize_order(self):
-        import random
-        self.order_id = f"#NF-{random.randint(10000, 99999)}"
-        self.order_success = True
-        self.cart_items = []
+            api_key = os.getenv("ASAAS_API_KEY", "").strip()
+            if not api_key:
+                self.payment_message = (
+                    "Configure a chave da API Sandbox em ASAAS_API_KEY para continuar."
+                )
+                return
+            if not api_key.startswith("$aact_hmlg_"):
+                self.payment_message = (
+                    "Use uma chave do Asaas Sandbox (iniciada por $aact_hmlg_)."
+                )
+                return
+
+            origin = urlparse(self.router.headers.origin)
+            if origin.scheme != "https" and origin.hostname not in {
+                "localhost",
+                "127.0.0.1",
+                "::1",
+            }:
+                self.payment_message = (
+                    "O formulário de cartão só pode ser usado em HTTPS."
+                )
+                return
+
+            remote_ip = self.router.session.client_ip.strip()
+            try:
+                ip_address(remote_ip)
+            except ValueError:
+                self.payment_message = (
+                    "Não foi possível identificar o IP do dispositivo para o pagamento."
+                )
+                return
+
+            card_form = normalize_asaas_credit_card_form(form_data)
+
+            total = Decimal(str(self.cart_final_total)).quantize(Decimal("0.01"))
+            if total <= 0:
+                self.payment_message = "O total do pedido precisa ser maior que zero."
+                return
+
+            external_reference = self.payment_reference or f"NF-{uuid4().hex}"
+            self.payment_reference = external_reference
+            headers = {
+                "access_token": api_key,
+                "Content-Type": "application/json",
+                "User-Agent": "NightFall/1.0",
+            }
+            async with httpx.AsyncClient(timeout=65.0) as client:
+                payment = await find_asaas_payment(
+                    client,
+                    headers,
+                    external_reference,
+                )
+                if payment is None:
+                    customer_id = await find_asaas_customer(
+                        client,
+                        headers,
+                        card_form,
+                    )
+                    if customer_id is None:
+                        customer_id = await create_asaas_customer(
+                            client,
+                            headers,
+                            card_form,
+                        )
+
+                    payload = build_asaas_credit_card_payment_payload(
+                        total=total,
+                        external_reference=external_reference,
+                        customer_id=customer_id,
+                        remote_ip=remote_ip,
+                        form_data=card_form,
+                    )
+                    payment_request_started = True
+                    response = await client.post(
+                        f"{ASAAS_API_BASE_URL}/payments",
+                        headers=headers,
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    payment = response.json()
+        except httpx.TimeoutException:
+            if payment_request_started:
+                self.payment_message = (
+                    "O Asaas demorou para responder após o envio. A cobrança pode ter "
+                    f"sido registrada; verifique a referência {self.payment_reference} "
+                    "no Sandbox antes de tentar novamente."
+                )
+            else:
+                self.payment_reference = ""
+                self.payment_message = "O Asaas demorou para responder. Tente novamente."
+        except httpx.HTTPStatusError as error:
+            status_code = error.response.status_code
+            if status_code in {400, 401, 403} or not payment_request_started:
+                self.payment_reference = ""
+            if status_code == 400 and payment_request_started:
+                self.payment_message = (
+                    "O Asaas recusou a cobrança (HTTP 400). Confira os dados e use "
+                    "somente um cartão fictício de teste do Sandbox."
+                )
+            elif status_code == 400:
+                self.payment_message = (
+                    "O Asaas recusou os dados do cliente (HTTP 400). Confira nome, "
+                    "e-mail, CPF, CEP e telefone."
+                )
+            elif status_code in {401, 403}:
+                self.payment_message = (
+                    "O Asaas recusou a chave Sandbox. Confira ASAAS_API_KEY."
+                )
+            else:
+                self.payment_message = (
+                    f"O Asaas respondeu com HTTP {status_code}. "
+                    "Confira o Sandbox antes de tentar novamente."
+                )
+        except httpx.RequestError:
+            if payment_request_started:
+                self.payment_message = (
+                    "A conexão foi interrompida após o envio. A cobrança pode ter "
+                    f"sido registrada; verifique a referência {self.payment_reference} "
+                    "no Sandbox antes de tentar novamente."
+                )
+            else:
+                self.payment_reference = ""
+                self.payment_message = "Não foi possível conectar ao Asaas Sandbox."
+        except ValueError as error:
+            if payment_request_started:
+                self.payment_message = (
+                    "O Asaas retornou uma resposta inválida após o envio. Verifique "
+                    f"a referência {self.payment_reference} no Sandbox."
+                )
+            else:
+                self.payment_reference = ""
+                self.payment_message = str(error)
+        else:
+            if not isinstance(payment, dict) or not isinstance(payment.get("id"), str):
+                self.payment_message = (
+                    "O Asaas respondeu sem o ID da cobrança. Verifique a referência "
+                    f"{self.payment_reference} no Sandbox antes de tentar novamente."
+                )
+                return
+
+            status = payment.get("status")
+            status_text = status if isinstance(status, str) else "Não informado"
+
+            # Registra o pedido no histórico do usuário e na persistência local/Xano.
+            order_id = f"#NF-{self.payment_reference.removeprefix('NF-')[:8].upper()}"
+            order_data = {
+                "id": order_id,
+                "date": datetime.now().strftime("%d/%m/%Y"),
+                "items": list(self.cart_items),
+                "subtotal": self.cart_total,
+                "discount": self.discount_amount,
+                "shipping": self.shipping_cost,
+                "total": self.cart_final_total,
+                "total_display": self.cart_final_total_display,
+                "status": status_text,
+                "payment_method": self.payment_method,
+                "asaas_payment_id": payment["id"],
+            }
+            from order_persistence import send_order_to_xano
+
+            send_order_to_xano(order_data)
+            auth_state.orders = list(auth_state.orders) + [
+                {
+                    "id": order_id,
+                    "date": order_data["date"],
+                    "items_count": sum(item["quantity"] for item in self.cart_items),
+                    "total_display": self.cart_final_total_display,
+                    "status": status_text,
+                }
+            ]
+
+            self.payment_reference = ""
+            self.cart_items = []
+            return rx.toast.success(
+                "Cobrança registrada no Asaas Sandbox",
+                description=f"ID: {payment['id']} · Status: {status_text}",
+                duration=10000,
+            )
+        finally:
+            self.is_processing_payment = False
 
     @rx.event
     def clear_filters(self):
@@ -653,6 +1020,95 @@ class CatalogState(rx.State):
                         brands.append(brand)
         return sorted(brands)
 
+class AdminState(rx.State):
+    admin_tab: str = "produtos"
+    admin_message: str = ""
+
+    # New product form fields
+    new_prod_name: str = ""
+    new_prod_category: str = "Componentes"
+    new_prod_price: str = ""
+    new_prod_description: str = ""
+    new_prod_image_url: str = ""
+    new_prod_brand: str = ""
+
+    @rx.event
+    def set_admin_tab(self, tab: str):
+        self.admin_tab = tab
+        self.admin_message = ""
+
+    @rx.event
+    def set_new_prod_name(self, val: str):
+        self.new_prod_name = val
+
+    @rx.event
+    def set_new_prod_category(self, val: str):
+        self.new_prod_category = val
+
+    @rx.event
+    def set_new_prod_price(self, val: str):
+        self.new_prod_price = val
+
+    @rx.event
+    def set_new_prod_description(self, val: str):
+        self.new_prod_description = val
+
+    @rx.event
+    def set_new_prod_image_url(self, val: str):
+        self.new_prod_image_url = val
+
+    @rx.event
+    def set_new_prod_brand(self, val: str):
+        self.new_prod_brand = val
+
+    @rx.event
+    async def add_product(self):
+        name = self.new_prod_name.strip()
+        cat = self.new_prod_category.strip()
+        price_str = self.new_prod_price.strip().replace(",", ".")
+        desc = self.new_prod_description.strip()
+        img = self.new_prod_image_url.strip() or "https://images.unsplash.com/photo-1587202372775-e229f172b9d7?auto=format&fit=crop&w=600&q=80"
+        brand = self.new_prod_brand.strip() or "NightFall"
+
+        if not name or not price_str or not desc:
+            self.admin_message = "Preencha nome, preço e descrição do produto."
+            return
+
+        try:
+            price = float(price_str)
+        except ValueError:
+            self.admin_message = "Preço inválido. Digite um número válido."
+            return
+
+        formatted_price = f"{Decimal(str(price)):,.2f}"
+        formatted_price = formatted_price.replace(",", "X").replace(".", ",").replace("X", ".")
+
+        catalog_state = await self.get_state(CatalogState)
+        new_item: Product = {
+            "name": name,
+            "image_url": img,
+            "source_url": "https://nightfall.com.br",
+            "price": price,
+            "price_display": f"R$ {formatted_price}",
+            "description": desc,
+            "category": cat,
+            "specifications": [{"label": "Marca", "value": brand}] if brand else []
+        }
+        catalog_state.products = list(catalog_state.products) + [new_item]
+        self.admin_message = f"Produto '{name}' cadastrado com sucesso!"
+        self.new_prod_name = ""
+        self.new_prod_price = ""
+        self.new_prod_description = ""
+        self.new_prod_image_url = ""
+        self.new_prod_brand = ""
+
+    @rx.event
+    async def delete_catalog_product(self, product_name: str):
+        catalog_state = await self.get_state(CatalogState)
+        catalog_state.products = [p for p in catalog_state.products if p["name"] != product_name]
+        self.admin_message = f"Produto '{product_name}' removido do catálogo."
+
+
 class AuthState(rx.State):
     is_logged_in: bool = False
     is_admin: bool = False
@@ -665,6 +1121,8 @@ class AuthState(rx.State):
     profile_tab: str = "dados"
     redirect_after_login: str = ""
     logout_dialog_open: bool = False
+    orders: list[dict] = []
+    warranties: list[dict] = []
 
     addresses: list[AddressItem] = [
         {
@@ -1225,9 +1683,9 @@ def product_card(product: rx.Var[Product]) -> rx.Component:
         on_click=CatalogState.open_product_details(product["name"]),
         aria_label=f"Ver detalhes de {product['name']}",
         variant="ghost",
-        width="340px",
-        flex="1 1 340px",
-        max_width="420px",
+        width="100%",
+        flex="1 1 100%",
+        max_width="100%",
         min_height="460px",
         height="100%",
         padding="18px",
@@ -2658,7 +3116,420 @@ def index() -> rx.Component:
             ),
             min_height="100vh",
             width="100%",
-            max_width="1120px",
+            max_width="1400px",
+            margin_x="auto",
+            padding="28px clamp(20px, 5vw, 64px) 24px",
+            align="center",
+        ),
+        min_height="100vh",
+        width="100%",
+        overflow_x="hidden",
+        background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
+    )
+
+def index() -> rx.Component:
+    return rx.box(
+        product_details_dialog(),
+        rx.vstack(
+            rx.hstack(
+                rx.hstack(
+                    rx.box(
+                        rx.text(
+                            "N",
+                            color="#f5f3ff",
+                            font_size="18px",
+                            font_weight="800",
+                            text_align="center",
+                            line_height="40px",
+                        ),
+                        width="40px",
+                        height="40px",
+                        background="linear-gradient(145deg, #a78bfa, #6d28d9)",
+                        border="1px solid rgba(196, 181, 253, 0.35)",
+                        border_radius="12px",
+                        box_shadow="0 8px 28px rgba(139, 92, 246, 0.25)",
+                    ),
+                    rx.heading(
+                        "NightFall",
+                        size="6",
+                        color="#f5f3ff",
+                        letter_spacing="-0.04em",
+                    ),
+                    spacing="3",
+                    align="center",
+                ),
+                rx.hstack(
+                    rx.dialog.root(
+                        rx.dialog.trigger(
+                            rx.button(
+                                rx.hstack(
+                                    rx.icon("menu", size=20),
+                                    rx.text("Menu", font_weight="600"),
+                                    spacing="2",
+                                    align="center",
+                                ),
+                                variant="soft",
+                                color_scheme="purple",
+                                aria_label="Abrir menu de navegação",
+                                height="40px",
+                                padding_x="14px",
+                            ),
+                        ),
+                        rx.dialog.content(
+                            rx.vstack(
+                                rx.hstack(
+                                    rx.heading("Navegação", size="5", color="#f5f3ff"),
+                                    rx.dialog.close(
+                                        rx.button(
+                                            "Fechar",
+                                            variant="soft",
+                                            color_scheme="gray",
+                                            aria_label="Fechar menu",
+                                        ),
+                                    ),
+                                    width="100%",
+                                    justify="between",
+                                    align="center",
+                                ),
+                                rx.vstack(
+                                    rx.link(
+                                        "Início / Loja",
+                                        href="/",
+                                        color="#f5f3ff",
+                                        font_size="15px",
+                                        font_weight="600",
+                                        text_decoration="none",
+                                    ),
+                                    rx.link(
+                                        "Carrinho",
+                                        href="/carrinho",
+                                        color="#f5f3ff",
+                                        font_size="15px",
+                                        font_weight="600",
+                                        text_decoration="none",
+                                    ),
+                                    rx.link(
+                                        "Perfil & Painel",
+                                        href="/perfil",
+                                        color="#f5f3ff",
+                                        font_size="15px",
+                                        font_weight="600",
+                                        text_decoration="none",
+                                    ),
+                                    width="100%",
+                                    spacing="3",
+                                    margin_top="16px",
+                                ),
+                                width="100%",
+                                align="start",
+                                spacing="4",
+                            ),
+                            position="fixed",
+                            top="0",
+                            left="0",
+                            bottom="0",
+                            width="min(88vw, 320px)",
+                            height="100vh",
+                            padding="32px 24px",
+                            background="#101018",
+                            border="1px solid rgba(167, 139, 250, 0.2)",
+                            border_radius="0 24px 24px 0",
+                            box_shadow="0 0 0 100vmax rgba(3, 3, 8, 0.72)",
+                        ),
+                    ),
+                    rx.cond(
+                        AuthState.is_logged_in,
+                        rx.hstack(
+                            rx.link(
+                                rx.hstack(
+                                    rx.icon("user", size=16),
+                                    rx.text(AuthState.user_name, font_weight="600", font_size="13px"),
+                                    spacing="2",
+                                    align="center",
+                                ),
+                                href="/perfil",
+                                color="#f5f3ff",
+                                text_decoration="none",
+                            ),
+                            rx.dialog.root(
+                                rx.dialog.trigger(
+                                    rx.button(
+                                        "Sair",
+                                        size="1",
+                                        variant="soft",
+                                        color_scheme="red",
+                                    ),
+                                ),
+                                rx.dialog.content(
+                                    rx.vstack(
+                                        rx.dialog.title("Confirmar Saída", color="#f5f3ff"),
+                                        rx.dialog.description(
+                                            "Tem certeza que deseja fazer o logout da sua conta?",
+                                            color="#a1a1aa",
+                                        ),
+                                        rx.hstack(
+                                            rx.dialog.close(
+                                                rx.button(
+                                                    "Cancelar",
+                                                    variant="soft",
+                                                    color_scheme="gray",
+                                                    on_click=AuthState.set_logout_dialog_open(False),
+                                                ),
+                                            ),
+                                            rx.button(
+                                                "Sim, sair",
+                                                color_scheme="red",
+                                                on_click=AuthState.confirm_logout,
+                                            ),
+                                            spacing="3",
+                                            justify="end",
+                                            width="100%",
+                                            margin_top="16px",
+                                        ),
+                                        spacing="4",
+                                        align="start",
+                                        width="100%",
+                                    ),
+                                    background="#101018",
+                                    border="1px solid rgba(167, 139, 250, 0.2)",
+                                    border_radius="20px",
+                                    padding="24px",
+                                    max_width="400px",
+                                ),
+                                open=AuthState.logout_dialog_open,
+                                on_open_change=AuthState.set_logout_dialog_open,
+                            ),
+                            spacing="2",
+                            align="center",
+                            background="rgba(139, 92, 246, 0.18)",
+                            border="1px solid rgba(167, 139, 250, 0.24)",
+                            border_radius="999px",
+                            padding_x="14px",
+                            padding_y="6px",
+                        ),
+                        rx.link(
+                            "Login",
+                            href="/login",
+                            color="#f5f3ff",
+                            background="rgba(139, 92, 246, 0.18)",
+                            border="1px solid rgba(167, 139, 250, 0.24)",
+                            border_radius="999px",
+                            padding_x="16px",
+                            padding_y="8px",
+                            font_size="13px",
+                            font_weight="600",
+                            text_decoration="none",
+                            transition="background-color 160ms ease, border-color 160ms ease",
+                            _hover={
+                                "background": "rgba(139, 92, 246, 0.28)",
+                                "border_color": "rgba(196, 181, 253, 0.5)",
+                            },
+                            _focus_visible={
+                                "outline": "2px solid #c4b5fd",
+                                "outline_offset": "2px",
+                            },
+                        ),
+                    ),
+                    spacing="3",
+                    align="center",
+                ),
+                rx.hstack(
+                    rx.dialog.root(
+                        rx.dialog.trigger(
+                            rx.button(
+                                "Categorias",
+                                variant="soft",
+                                color_scheme="purple",
+                                aria_label="Abrir menu de categorias",
+                            ),
+                        ),
+                        rx.dialog.content(
+                            rx.vstack(
+                                rx.hstack(
+                                    rx.heading("Categorias", size="5", color="#f5f3ff"),
+                                    rx.dialog.close(
+                                        rx.button(
+                                            "Fechar",
+                                            variant="soft",
+                                            color_scheme="gray",
+                                            aria_label="Fechar menu de categorias",
+                                        ),
+                                    ),
+                                    width="100%",
+                                    justify="between",
+                                    align="start",
+                                    spacing="4",
+                                ),
+                                rx.vstack(
+                                    rx.cond(
+                                        CatalogState.products.length() > 0,
+                                        rx.dialog.close(
+                                            rx.button(
+                                                "Todos os produtos",
+                                                on_click=CatalogState.show_all_products,
+                                                variant="ghost",
+                                                color=rx.cond(
+                                                    CatalogState.selected_category == "Todos",
+                                                    "#f5f3ff",
+                                                    "#d4d4d8",
+                                                ),
+                                                background=rx.cond(
+                                                    CatalogState.selected_category == "Todos",
+                                                    "rgba(139, 92, 246, 0.18)",
+                                                    "transparent",
+                                                ),
+                                                border_left=rx.cond(
+                                                    CatalogState.selected_category == "Todos",
+                                                    "3px solid #a78bfa",
+                                                    "3px solid transparent",
+                                                ),
+                                                aria_pressed=(
+                                                    CatalogState.selected_category == "Todos"
+                                                ),
+                                                width="100%",
+                                                min_height="52px",
+                                                padding="12px 16px",
+                                                justify="start",
+                                                text_align="left",
+                                                white_space="normal",
+                                                line_height="1.4",
+                                                border_radius="12px",
+                                                font_size="15px",
+                                                font_weight=rx.cond(
+                                                    CatalogState.selected_category == "Todos",
+                                                    "600",
+                                                    "500",
+                                                ),
+                                                transition=(
+                                                    "background-color 160ms ease, color 160ms ease"
+                                                ),
+                                                _hover={
+                                                    "background": "rgba(139, 92, 246, 0.12)",
+                                                    "color": "#f5f3ff",
+                                                },
+                                                _focus_visible={
+                                                    "outline": "2px solid #c4b5fd",
+                                                    "outline_offset": "2px",
+                                                },
+                                            ),
+                                        ),
+                                        rx.fragment(),
+                                    ),
+                                    rx.foreach(CatalogState.categories, category_item),
+                                    width="100%",
+                                    spacing="2",
+                                    margin_top="32px",
+                                ),
+                                width="100%",
+                                align="start",
+                                spacing="5",
+                            ),
+                            position="fixed",
+                            top="0",
+                            left="0",
+                            bottom="0",
+                            right="auto",
+                            transform="none",
+                            width="min(88vw, 360px)",
+                            max_width="100vw",
+                            height="100vh",
+                            margin="0",
+                            padding="32px 24px",
+                            background="#101018",
+                            border="1px solid rgba(167, 139, 250, 0.2)",
+                            border_radius="0 24px 24px 0",
+                            box_shadow="0 0 0 100vmax rgba(3, 3, 8, 0.72), 24px 0 80px rgba(0, 0, 0, 0.45)",
+                            overflow_y="auto",
+                            outline="none",
+                            font_family=(
+                                '"Inter", "Segoe UI", ui-sans-serif, system-ui, sans-serif'
+                            ),
+                            visibility=rx.cond(
+                                CatalogState.category_menu_open,
+                                "visible",
+                                "hidden",
+                            ),
+                            pointer_events=rx.cond(
+                                CatalogState.category_menu_open,
+                                "auto",
+                                "none",
+                            ),
+                        ),
+                        open=CatalogState.category_menu_open,
+                        on_open_change=CatalogState.set_category_menu_open,
+                    ),
+                    rx.button(
+                        rx.hstack(
+                            rx.icon("shopping_cart", size=18),
+                            rx.cond(
+                                CatalogState.cart_count > 0,
+                                rx.badge(
+                                    CatalogState.cart_count,
+                                    color_scheme="purple",
+                                    variant="solid",
+                                    size="1",
+                                ),
+                                rx.fragment(),
+                            ),
+                            spacing="2",
+                            align="center",
+                        ),
+                        on_click=rx.redirect("/carrinho"),
+                        variant="soft",
+                        color_scheme="purple",
+                        type="button",
+                        aria_label="Carrinho de compras",
+                        height="40px",
+                        min_width="40px",
+                        padding_x="12px",
+                        flex_shrink="0",
+                        _focus_visible={
+                            "outline": "2px solid #c4b5fd",
+                            "outline_offset": "2px",
+                        },
+                    ),
+                    spacing="2",
+                    align="center",
+                    flex_shrink="0",
+                ),
+                spacing="3",
+                align="center",
+                justify="between",
+                width="100%",
+                flex_wrap="wrap",
+            ),
+            rx.spacer(),
+            rx.center(
+                rx.vstack(
+                    rx.box(
+                        width="48px",
+                        height="3px",
+                        background_color="#a78bfa",
+                        border_radius="999px",
+                        box_shadow="0 0 20px rgba(167, 139, 250, 0.75)",
+                    ),
+                    rx.cond(
+                        CatalogState.products.length() > 0,
+                        product_catalog(),
+                        empty_catalog_state(),
+                    ),
+                    spacing="6",
+                    align="center",
+                    width="100%",
+                ),
+                width="100%",
+                flex="1",
+            ),
+            rx.text(
+                "NIGHTFALL",
+                color="#52525b",
+                font_size="11px",
+                font_weight="600",
+                letter_spacing="0.2em",
+            ),
+            min_height="100vh",
+            width="100%",
+            max_width="1400px",
             margin_x="auto",
             padding="28px clamp(20px, 5vw, 64px) 24px",
             align="center",
@@ -2715,54 +3586,10 @@ def checkout_page() -> rx.Component:
                 padding_bottom="24px",
                 border_bottom="1px solid rgba(167, 139, 250, 0.16)",
             ),
-            # Content / Auth Guard & Success cond
+            # Content / Auth Guard
             rx.cond(
                 AuthState.is_logged_in,
-                rx.cond(
-                    CatalogState.order_success,
-                    # Success View
-                    rx.vstack(
-                        rx.box(
-                            rx.icon("circle_check", size=48, color="#4ade80"),
-                            padding="16px",
-                            background="rgba(74, 222, 128, 0.1)",
-                            border_radius="50%",
-                            border="1px solid rgba(74, 222, 128, 0.3)",
-                        ),
-                        rx.heading("Pedido Realizado com Sucesso!", size="7", color="#f5f3ff"),
-                        rx.text(
-                            f"Número do Pedido: {CatalogState.order_id}",
-                            color="#a78bfa",
-                            font_size="16px",
-                            font_weight="700",
-                        ),
-                        rx.text(
-                            "Obrigado por comprar na NightFall! Seu pedido está sendo processado e enviado para o seu endereço.",
-                            color="#a1a1aa",
-                            font_size="14px",
-                            text_align="center",
-                            max_width="480px",
-                        ),
-                        rx.link(
-                            rx.button(
-                                "Voltar para a Loja",
-                                color_scheme="purple",
-                                size="3",
-                                font_weight="700",
-                            ),
-                            href="/",
-                            text_decoration="none",
-                            margin_top="16px",
-                        ),
-                        width="100%",
-                        align="center",
-                        spacing="4",
-                        padding="60px 24px",
-                        background="linear-gradient(145deg, rgba(24, 20, 36, 0.96), rgba(15, 14, 22, 0.98))",
-                        border="1px solid rgba(167, 139, 250, 0.18)",
-                        border_radius="24px",
-                    ),
-                    # Checkout Form & Summary View
+                rx.form(
                     rx.flex(
                     # Left: Form (Address & Payment)
                     rx.vstack(
@@ -2911,6 +3738,7 @@ def checkout_page() -> rx.Component:
                                 on_click=CatalogState.set_payment_method("credit_card"),
                                 variant=rx.cond(CatalogState.payment_method == "credit_card", "solid", "soft"),
                                 color_scheme="purple",
+                                type="button",
                                 flex="1",
                             ),
                             rx.button(
@@ -2918,6 +3746,7 @@ def checkout_page() -> rx.Component:
                                 on_click=CatalogState.set_payment_method("pix"),
                                 variant=rx.cond(CatalogState.payment_method == "pix", "solid", "soft"),
                                 color_scheme="purple",
+                                type="button",
                                 flex="1",
                             ),
                             rx.button(
@@ -2925,6 +3754,7 @@ def checkout_page() -> rx.Component:
                                 on_click=CatalogState.set_payment_method("boleto"),
                                 variant=rx.cond(CatalogState.payment_method == "boleto", "solid", "soft"),
                                 color_scheme="purple",
+                                type="button",
                                 flex="1",
                             ),
                             width="100%",
@@ -2934,47 +3764,144 @@ def checkout_page() -> rx.Component:
                         rx.cond(
                             CatalogState.payment_method == "credit_card",
                             rx.vstack(
-                                rx.vstack(
-                                    rx.text("Número do Cartão", color="#e4e4e7", font_size="13px", font_weight="600"),
-                                    rx.input(
-                                        placeholder="0000 0000 0000 0000",
-                                        value=CatalogState.card_number,
-                                        on_change=CatalogState.set_card_number,
-                                        width="100%",
-                                        height="42px",
-                                        background="#11111a",
-                                        border="1px solid rgba(167, 139, 250, 0.24)",
-                                        border_radius="10px",
-                                        color="#f5f3ff",
-                                    ),
-                                    width="100%",
-                                    spacing="2",
-                                    align="start",
+                                rx.heading(
+                                    "Dados do cartão e do titular",
+                                    size="4",
+                                    color="#f5f3ff",
                                 ),
-                                rx.vstack(
-                                    rx.text("Nome no Cartão", color="#e4e4e7", font_size="13px", font_weight="600"),
-                                    rx.input(
-                                        placeholder="Nome como impresso no cartão",
-                                        value=CatalogState.card_name,
-                                        on_change=CatalogState.set_card_name,
-                                        width="100%",
-                                        height="42px",
-                                        background="#11111a",
-                                        border="1px solid rgba(167, 139, 250, 0.24)",
-                                        border_radius="10px",
-                                        color="#f5f3ff",
-                                    ),
-                                    width="100%",
-                                    spacing="2",
-                                    align="start",
+                                rx.text(
+                                    "Sandbox: use somente cartões fictícios de teste. "
+                                    "Nunca informe um cartão real. O formulário exige "
+                                    "HTTPS fora do localhost.",
+                                    color="#fbbf24",
+                                    font_size="13px",
+                                    text_align="center",
+                                ),
+                                rx.link(
+                                    "Consultar cartões de teste do Asaas",
+                                    href="https://docs.asaas.com/docs/testando-pagamento-com-cart%C3%A3o-de-cr%C3%A9dito",
+                                    target="_blank",
+                                    color="#c4b5fd",
+                                    font_size="13px",
                                 ),
                                 rx.flex(
                                     rx.vstack(
+                                        rx.text("Nome impresso no cartão", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                        rx.input(
+                                            name="holder_name",
+                                            default_value=AuthState.user_name,
+                                            placeholder="Nome do titular",
+                                            auto_complete=True,
+                                            required=True,
+                                            width="100%",
+                                            height="42px",
+                                            background="#11111a",
+                                            border="1px solid rgba(167, 139, 250, 0.24)",
+                                            border_radius="10px",
+                                            color="#f5f3ff",
+                                        ),
+                                        width="100%",
+                                        flex="1",
+                                        spacing="2",
+                                        align="start",
+                                    ),
+                                    rx.vstack(
+                                        rx.text("E-mail do titular", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                        rx.input(
+                                            name="holder_email",
+                                            type="email",
+                                            default_value=AuthState.user_email,
+                                            placeholder="nome@exemplo.com",
+                                            auto_complete=True,
+                                            required=True,
+                                            width="100%",
+                                            height="42px",
+                                            background="#11111a",
+                                            border="1px solid rgba(167, 139, 250, 0.24)",
+                                            border_radius="10px",
+                                            color="#f5f3ff",
+                                        ),
+                                        width="100%",
+                                        flex="1",
+                                        spacing="2",
+                                        align="start",
+                                    ),
+                                    spacing="4",
+                                    width="100%",
+                                    wrap="wrap",
+                                ),
+                                rx.flex(
+                                    rx.vstack(
+                                        rx.text("CPF do titular", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                        rx.input(
+                                            name="cpf_cnpj",
+                                            default_value=AuthState.user_cpf,
+                                            placeholder="000.000.000-00",
+                                            auto_complete=False,
+                                            required=True,
+                                            width="100%",
+                                            height="42px",
+                                            background="#11111a",
+                                            border="1px solid rgba(167, 139, 250, 0.24)",
+                                            border_radius="10px",
+                                            color="#f5f3ff",
+                                        ),
+                                        width="100%",
+                                        flex="1",
+                                        spacing="2",
+                                        align="start",
+                                    ),
+                                    rx.vstack(
+                                        rx.text("Telefone com DDD", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                        rx.input(
+                                            name="phone",
+                                            default_value=AuthState.user_phone,
+                                            placeholder="11999999999",
+                                            auto_complete=True,
+                                            required=True,
+                                            width="100%",
+                                            height="42px",
+                                            background="#11111a",
+                                            border="1px solid rgba(167, 139, 250, 0.24)",
+                                            border_radius="10px",
+                                            color="#f5f3ff",
+                                        ),
+                                        width="100%",
+                                        flex="1",
+                                        spacing="2",
+                                        align="start",
+                                    ),
+                                    spacing="4",
+                                    width="100%",
+                                    wrap="wrap",
+                                ),
+                                rx.flex(
+                                    rx.vstack(
+                                        rx.text("Número do cartão", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                        rx.input(
+                                            name="card_number",
+                                            input_mode="numeric",
+                                            placeholder="Número do cartão de teste",
+                                            auto_complete=False,
+                                            required=True,
+                                            width="100%",
+                                            height="42px",
+                                            background="#11111a",
+                                            border="1px solid rgba(167, 139, 250, 0.24)",
+                                            border_radius="10px",
+                                            color="#f5f3ff",
+                                        ),
+                                        width="100%",
+                                        spacing="2",
+                                        align="start",
+                                    ),
+                                    rx.vstack(
                                         rx.text("Validade", color="#e4e4e7", font_size="13px", font_weight="600"),
                                         rx.input(
-                                            placeholder="MM/AA",
-                                            value=CatalogState.card_expiry,
-                                            on_change=CatalogState.set_card_expiry,
+                                            name="expiration",
+                                            type="month",
+                                            auto_complete=False,
+                                            required=True,
                                             width="100%",
                                             height="42px",
                                             background="#11111a",
@@ -2990,9 +3917,11 @@ def checkout_page() -> rx.Component:
                                     rx.vstack(
                                         rx.text("CVV", color="#e4e4e7", font_size="13px", font_weight="600"),
                                         rx.input(
-                                            placeholder="123",
-                                            value=CatalogState.card_cvv,
-                                            on_change=CatalogState.set_card_cvv,
+                                            name="ccv",
+                                            type="password",
+                                            input_mode="numeric",
+                                            auto_complete=False,
+                                            required=True,
                                             width="100%",
                                             height="42px",
                                             background="#11111a",
@@ -3000,15 +3929,62 @@ def checkout_page() -> rx.Component:
                                             border_radius="10px",
                                             color="#f5f3ff",
                                         ),
-                                        width="120px",
+                                        width="100%",
+                                        flex="1",
                                         spacing="2",
                                         align="start",
                                     ),
                                     spacing="4",
                                     width="100%",
+                                    wrap="wrap",
+                                ),
+                                rx.flex(
+                                    rx.vstack(
+                                        rx.text("CEP de cobrança", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                        rx.input(
+                                            name="postal_code",
+                                            default_value=CatalogState.shipping_cep,
+                                            placeholder="00000-000",
+                                            auto_complete=True,
+                                            required=True,
+                                            width="100%",
+                                            height="42px",
+                                            background="#11111a",
+                                            border="1px solid rgba(167, 139, 250, 0.24)",
+                                            border_radius="10px",
+                                            color="#f5f3ff",
+                                        ),
+                                        width="100%",
+                                        flex="1",
+                                        spacing="2",
+                                        align="start",
+                                    ),
+                                    rx.vstack(
+                                        rx.text("Número do endereço de cobrança", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                        rx.input(
+                                            name="address_number",
+                                            default_value=CatalogState.shipping_number,
+                                            placeholder="Número",
+                                            auto_complete=False,
+                                            required=True,
+                                            width="100%",
+                                            height="42px",
+                                            background="#11111a",
+                                            border="1px solid rgba(167, 139, 250, 0.24)",
+                                            border_radius="10px",
+                                            color="#f5f3ff",
+                                        ),
+                                        width="100%",
+                                        flex="1",
+                                        spacing="2",
+                                        align="start",
+                                    ),
+                                    spacing="4",
+                                    width="100%",
+                                    wrap="wrap",
                                 ),
                                 width="100%",
-                                spacing="3",
+                                spacing="4",
                             ),
                             rx.cond(
                                 CatalogState.payment_method == "pix",
@@ -3017,7 +3993,7 @@ def checkout_page() -> rx.Component:
                                         rx.vstack(
                                             rx.icon("qr_code", size=64, color="#c4b5fd"),
                                             rx.text("Escaneie o QR Code com o app do seu banco", color="#f5f3ff", font_size="14px", font_weight="600"),
-                                            rx.text("Chave Pix Copia e Cola gerada com sucesso para pagamento instantâneo.", color="#a1a1aa", font_size="12px", text_align="center"),
+                                            rx.text("Prévia visual: nenhum QR Code ou código Pix foi gerado.", color="#a1a1aa", font_size="12px", text_align="center"),
                                             spacing="2",
                                             align="center",
                                         ),
@@ -3034,8 +4010,8 @@ def checkout_page() -> rx.Component:
                                     rx.center(
                                         rx.vstack(
                                             rx.icon("file_text", size=48, color="#c4b5fd"),
-                                            rx.text("Boleto Bancário gerado com sucesso!", color="#f5f3ff", font_size="14px", font_weight="600"),
-                                            rx.text("O boleto vence em 3 dias úteis. A aprovação ocorre em até 48h após o pagamento.", color="#a1a1aa", font_size="12px", text_align="center"),
+                                            rx.text("Boleto Bancário", color="#f5f3ff", font_size="14px", font_weight="600"),
+                                            rx.text("Prévia visual: nenhum boleto foi gerado.", color="#a1a1aa", font_size="12px", text_align="center"),
                                             spacing="2",
                                             align="center",
                                         ),
@@ -3092,13 +4068,32 @@ def checkout_page() -> rx.Component:
                             justify="between",
                         ),
                         rx.button(
-                            "Confirmar Pedido",
-                            on_click=CatalogState.finalize_order,
+                            rx.cond(
+                                CatalogState.payment_method == "credit_card",
+                                "Criar cobrança no Asaas Sandbox",
+                                "Confirmar Pedido",
+                            ),
+                            type="submit",
                             color_scheme="purple",
                             size="3",
                             width="100%",
                             font_weight="700",
                             margin_top="16px",
+                            disabled=rx.cond(
+                                CatalogState.payment_method == "credit_card",
+                                CatalogState.is_processing_payment,
+                                True,
+                            ),
+                        ),
+                        rx.cond(
+                            CatalogState.payment_message != "",
+                            rx.text(
+                                CatalogState.payment_message,
+                                color="#a1a1aa",
+                                font_size="13px",
+                                text_align="center",
+                            ),
+                            rx.fragment(),
                         ),
                         width="100%",
                         flex="1",
@@ -3115,7 +4110,9 @@ def checkout_page() -> rx.Component:
                     width="100%",
                     align="start",
                 ),
-            ),
+                    on_submit=CatalogState.finalize_order,
+                    reset_on_submit=True,
+                    ),
             # Not logged in view
             rx.vstack(
                 rx.box(
@@ -3457,30 +4454,41 @@ def profile_page() -> rx.Component:
                                     rx.heading("Meus Pedidos", size="6", color="#f5f3ff"),
                                     rx.text("Acompanhe o histórico e status das suas compras recentes.", color="#a1a1aa", font_size="14px"),
                                     rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
-                                    rx.vstack(
-                                        rx.hstack(
-                                            rx.vstack(
-                                                rx.text("Pedido #NF-84920", color="#f5f3ff", font_weight="700", font_size="15px"),
-                                                rx.text("Data: 26/10/2026 • 1 item", color="#a1a1aa", font_size="13px"),
-                                                spacing="1",
-                                                align="start",
-                                            ),
-                                            rx.vstack(
-                                                rx.text("R$ 2.609,91", color="#e9d5ff", font_weight="700", font_size="15px"),
-                                                rx.badge("Concluído", color_scheme="green", variant="solid", size="1"),
-                                                spacing="1",
-                                                align="end",
+                                    rx.cond(
+                                        AuthState.orders.length() > 0,
+                                        rx.vstack(
+                                            rx.foreach(
+                                                AuthState.orders,
+                                                lambda order: rx.hstack(
+                                                    rx.vstack(
+                                                        rx.text(order["id"], color="#f5f3ff", font_weight="700", font_size="15px"),
+                                                        rx.text(
+                                                            "Data: " + order["date"].to_string() + " • " + order["items_count"].to_string() + " item(ns)",
+                                                            color="#a1a1aa",
+                                                            font_size="13px"
+                                                        ),
+                                                        spacing="1",
+                                                        align="start",
+                                                    ),
+                                                    rx.vstack(
+                                                        rx.text(order["total_display"], color="#e9d5ff", font_weight="700", font_size="15px"),
+                                                        rx.badge(order["status"], color_scheme="green", variant="solid", size="1"),
+                                                        spacing="1",
+                                                        align="end",
+                                                    ),
+                                                    width="100%",
+                                                    justify="between",
+                                                    align="center",
+                                                    padding="16px",
+                                                    background="#11111a",
+                                                    border="1px solid rgba(167, 139, 250, 0.2)",
+                                                    border_radius="12px",
+                                                ),
                                             ),
                                             width="100%",
-                                            justify="between",
-                                            align="center",
-                                            padding="16px",
-                                            background="#11111a",
-                                            border="1px solid rgba(167, 139, 250, 0.2)",
-                                            border_radius="12px",
+                                            spacing="3",
                                         ),
-                                        width="100%",
-                                        spacing="3",
+                                        rx.text("Você ainda não realizou nenhum pedido na NightFall.", color="#a1a1aa", font_size="14px", padding_y="16px"),
                                     ),
                                     width="100%",
                                     spacing="4",
@@ -3491,26 +4499,7 @@ def profile_page() -> rx.Component:
                                         rx.heading("Garantia de Produtos", size="6", color="#f5f3ff"),
                                         rx.text("Consulte a vigência e termos de garantia dos seus hardwares.", color="#a1a1aa", font_size="14px"),
                                         rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
-                                        rx.vstack(
-                                            rx.hstack(
-                                                rx.vstack(
-                                                    rx.text("Processador AMD Ryzen 7 7800X3D", color="#f5f3ff", font_weight="700", font_size="15px"),
-                                                    rx.text("Garantia de Fábrica: 3 Anos (Válida até Out/2029)", color="#4ade80", font_size="13px"),
-                                                    spacing="1",
-                                                    align="start",
-                                                ),
-                                                rx.badge("Ativa", color_scheme="purple", variant="solid", size="1"),
-                                                width="100%",
-                                                justify="between",
-                                                align="center",
-                                                padding="16px",
-                                                background="#11111a",
-                                                border="1px solid rgba(167, 139, 250, 0.2)",
-                                                border_radius="12px",
-                                            ),
-                                            width="100%",
-                                            spacing="3",
-                                        ),
+                                        rx.text("Nenhum produto cadastrado com garantia ativa no momento. Os hardwares adquiridos em pedidos concluídos aparecerão aqui.", color="#a1a1aa", font_size="14px", padding_y="16px"),
                                         width="100%",
                                         spacing="4",
                                     ),
@@ -3846,6 +4835,330 @@ def profile_page() -> rx.Component:
         background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
     )
 
+def admin_page() -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            # Header
+            rx.hstack(
+                rx.link(
+                    "← Voltar à Loja",
+                    href="/",
+                    color="#c4b5fd",
+                    font_size="14px",
+                    font_weight="600",
+                    text_decoration="none",
+                    _hover={"color": "#f5f3ff"},
+                ),
+                rx.hstack(
+                    rx.box(
+                        rx.text(
+                            "N",
+                            color="#f5f3ff",
+                            font_size="18px",
+                            font_weight="800",
+                            text_align="center",
+                            line_height="40px",
+                        ),
+                        width="40px",
+                        height="40px",
+                        background="linear-gradient(145deg, #a78bfa, #6d28d9)",
+                        border="1px solid rgba(196, 181, 253, 0.35)",
+                        border_radius="12px",
+                        box_shadow="0 8px 28px rgba(139, 92, 246, 0.25)",
+                    ),
+                    rx.heading(
+                        "NightFall Painel Administrativo",
+                        size="5",
+                        color="#f5f3ff",
+                        letter_spacing="-0.04em",
+                    ),
+                    spacing="3",
+                    align="center",
+                ),
+                width="100%",
+                justify="between",
+                align="center",
+                padding_bottom="24px",
+                border_bottom="1px solid rgba(167, 139, 250, 0.16)",
+            ),
+            # Content / Admin Layout
+            rx.flex(
+                # Left Navigation
+                rx.vstack(
+                    rx.heading("Gestão", size="4", color="#f5f3ff", margin_bottom="8px"),
+                    rx.button(
+                        "Produtos",
+                        on_click=AdminState.set_admin_tab("produtos"),
+                        variant=rx.cond(AdminState.admin_tab == "produtos", "solid", "soft"),
+                        color_scheme="purple",
+                        width="100%",
+                        justify_content="start",
+                    ),
+                    rx.button(
+                        "Adicionar Produto",
+                        on_click=AdminState.set_admin_tab("adicionar_produto"),
+                        variant=rx.cond(AdminState.admin_tab == "adicionar_produto", "solid", "soft"),
+                        color_scheme="purple",
+                        width="100%",
+                        justify_content="start",
+                    ),
+                    rx.button(
+                        "Pedidos",
+                        on_click=AdminState.set_admin_tab("pedidos"),
+                        variant=rx.cond(AdminState.admin_tab == "pedidos", "solid", "soft"),
+                        color_scheme="purple",
+                        width="100%",
+                        justify_content="start",
+                    ),
+                    rx.button(
+                        "Clientes",
+                        on_click=AdminState.set_admin_tab("clientes"),
+                        variant=rx.cond(AdminState.admin_tab == "clientes", "solid", "soft"),
+                        color_scheme="purple",
+                        width="100%",
+                        justify_content="start",
+                    ),
+                    width="100%",
+                    flex="1",
+                    min_width="240px",
+                    padding="20px",
+                    background="linear-gradient(145deg, rgba(24, 20, 36, 0.96), rgba(15, 14, 22, 0.98))",
+                    border="1px solid rgba(167, 139, 250, 0.18)",
+                    border_radius="20px",
+                    spacing="3",
+                ),
+                # Right Content Area
+                rx.box(
+                    rx.cond(
+                        AdminState.admin_tab == "produtos",
+                        rx.vstack(
+                            rx.heading("Gerenciar Produtos do Catálogo", size="6", color="#f5f3ff"),
+                            rx.text("Lista de produtos ativos na loja. Você pode remover ou consultar.", color="#a1a1aa", font_size="14px"),
+                            rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                            rx.cond(
+                                AdminState.admin_message != "",
+                                rx.text(AdminState.admin_message, color="#4ade80", font_size="13px"),
+                                rx.fragment(),
+                            ),
+                            rx.vstack(
+                                rx.foreach(
+                                    CatalogState.products,
+                                    lambda prod: rx.hstack(
+                                        rx.image(src=prod["image_url"], width="48px", height="48px", object_fit="contain", background="#0b0b12", border_radius="8px"),
+                                        rx.vstack(
+                                            rx.text(prod["name"], color="#f5f3ff", font_weight="700", font_size="14px"),
+                                            rx.text(prod["category"] + " • " + prod["price_display"], color="#a78bfa", font_size="13px"),
+                                            spacing="1",
+                                            align="start",
+                                        ),
+                                        rx.button(
+                                            "Remover",
+                                            on_click=AdminState.delete_catalog_product(prod["name"]),
+                                            size="1",
+                                            variant="soft",
+                                            color_scheme="red",
+                                        ),
+                                        width="100%",
+                                        justify="between",
+                                        align="center",
+                                        padding="12px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.2)",
+                                        border_radius="10px",
+                                    ),
+                                ),
+                                width="100%",
+                                spacing="3",
+                            ),
+                            width="100%",
+                            spacing="4",
+                        ),
+                        rx.cond(
+                            AdminState.admin_tab == "adicionar_produto",
+                            rx.vstack(
+                                rx.heading("Cadastrar Novo Produto", size="6", color="#f5f3ff"),
+                                rx.text("Adicione um novo hardware ou periférico ao catálogo do e-commerce.", color="#a1a1aa", font_size="14px"),
+                                rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                                rx.cond(
+                                    AdminState.admin_message != "",
+                                    rx.text(AdminState.admin_message, color="#4ade80", font_size="13px"),
+                                    rx.fragment(),
+                                ),
+                                rx.vstack(
+                                    rx.text("Nome do Produto", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AdminState.new_prod_name,
+                                        on_change=AdminState.set_new_prod_name,
+                                        placeholder="Ex: Placa de Vídeo RTX 4070",
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%", spacing="2", align="start",
+                                ),
+                                rx.vstack(
+                                    rx.text("Categoria", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AdminState.new_prod_category,
+                                        on_change=AdminState.set_new_prod_category,
+                                        placeholder="Computadores, Componentes, Periféricos ou Acessórios",
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%", spacing="2", align="start",
+                                ),
+                                rx.vstack(
+                                    rx.text("Preço (R$)", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AdminState.new_prod_price,
+                                        on_change=AdminState.set_new_prod_price,
+                                        placeholder="3499.90",
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%", spacing="2", align="start",
+                                ),
+                                rx.vstack(
+                                    rx.text("URL da Imagem", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AdminState.new_prod_image_url,
+                                        on_change=AdminState.set_new_prod_image_url,
+                                        placeholder="https://exemplo.com/imagem.png",
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%", spacing="2", align="start",
+                                ),
+                                rx.vstack(
+                                    rx.text("Marca", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AdminState.new_prod_brand,
+                                        on_change=AdminState.set_new_prod_brand,
+                                        placeholder="Ex: NVIDIA",
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%", spacing="2", align="start",
+                                ),
+                                rx.vstack(
+                                    rx.text("Descrição", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AdminState.new_prod_description,
+                                        on_change=AdminState.set_new_prod_description,
+                                        placeholder="Descrição detalhada do hardware...",
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%", spacing="2", align="start",
+                                ),
+                                rx.button(
+                                    "Cadastrar Produto no Catálogo",
+                                    on_click=AdminState.add_product,
+                                    color_scheme="purple",
+                                    size="3",
+                                    width="100%",
+                                    font_weight="700",
+                                    margin_top="8px",
+                                ),
+                                width="100%",
+                                spacing="4",
+                            ),
+                            rx.cond(
+                                AdminState.admin_tab == "pedidos",
+                                rx.vstack(
+                                    rx.heading("Gerenciamento de Pedidos", size="6", color="#f5f3ff"),
+                                    rx.text("Lista de pedidos realizados por clientes na plataforma.", color="#a1a1aa", font_size="14px"),
+                                    rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                                    rx.vstack(
+                                        rx.hstack(
+                                            rx.vstack(
+                                                rx.text("Pedido #NF-84920", color="#f5f3ff", font_weight="700", font_size="15px"),
+                                                rx.text("Cliente: Diego Souza • Data: 26/10/2026", color="#a1a1aa", font_size="13px"),
+                                                spacing="1", align="start",
+                                            ),
+                                            rx.vstack(
+                                                rx.text("R$ 2.609,91", color="#e9d5ff", font_weight="700", font_size="15px"),
+                                                rx.badge("Concluído", color_scheme="green", variant="solid", size="1"),
+                                                spacing="1", align="end",
+                                            ),
+                                            width="100%", justify="between", align="center",
+                                            padding="16px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.2)", border_radius="12px",
+                                        ),
+                                        width="100%", spacing="3",
+                                    ),
+                                    width="100%", spacing="4",
+                                ),
+                                rx.vstack(
+                                    rx.heading("Clientes Cadastrados", size="6", color="#f5f3ff"),
+                                    rx.text("Base de clientes registrados na plataforma NightFall.", color="#a1a1aa", font_size="14px"),
+                                    rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
+                                    rx.vstack(
+                                        rx.hstack(
+                                            rx.vstack(
+                                                rx.text("Diego Souza", color="#f5f3ff", font_weight="700", font_size="15px"),
+                                                rx.text("diegossouza2007@gmail.com • (11) 98888-7777", color="#a1a1aa", font_size="13px"),
+                                                spacing="1", align="start",
+                                            ),
+                                            rx.badge("Ativo", color_scheme="purple", variant="solid", size="1"),
+                                            width="100%", justify="between", align="center",
+                                            padding="16px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.2)", border_radius="12px",
+                                        ),
+                                        width="100%", spacing="3",
+                                    ),
+                                    width="100%", spacing="4",
+                                ),
+                            ),
+                        ),
+                    ),
+                    width="100%",
+                    flex="3",
+                    padding="28px",
+                    background="linear-gradient(145deg, rgba(24, 20, 36, 0.96), rgba(15, 14, 22, 0.98))",
+                    border="1px solid rgba(167, 139, 250, 0.18)",
+                    border_radius="24px",
+                ),
+                direction="row",
+                wrap="wrap",
+                spacing="6",
+                width="100%",
+                align="start",
+            ),
+            width="100%",
+            max_width="1120px",
+            margin_x="auto",
+            padding="28px clamp(20px, 5vw, 64px) 24px",
+            align="stretch",
+        ),
+        min_height="100vh",
+        width="100%",
+        overflow_x="hidden",
+        background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
+    )
+
+
 app = rx.App()
 app.add_page(index, route="/")
 app.add_page(login_page, route="/login", title="Entrar | NightFall")
@@ -3853,3 +5166,4 @@ app.add_page(registration_page, route="/cadastro", title="Criar conta | NightFal
 app.add_page(cart_page, route="/carrinho", title="Carrinho de Compras | NightFall")
 app.add_page(checkout_page, route="/pagamento", title="Pagamento | NightFall")
 app.add_page(profile_page, route="/perfil", title="Meu Perfil | NightFall")
+app.add_page(admin_page, route="/admin", title="Painel Administrativo | NightFall")

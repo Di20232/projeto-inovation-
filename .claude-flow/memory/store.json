@@ -1,0 +1,338 @@
+{
+  "entries": {
+    "cmd-1793059933743": {
+      "key": "cmd-1793059933743",
+      "value": "{\"command\":\"git diff --name-only\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:12:13.743Z",
+      "lastAccessed": "2026-10-27T00:12:13.743Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:12:13.743Z"
+    },
+    "cmd-1793059961431": {
+      "key": "cmd-1793059961431",
+      "value": "{\"command\":\"ls \\\"C:\\\\Users\\\\Diego\\\\OneDrive\\\\Documentos\\\\04 - Estudos e Faculdade\\\\Projeto faculdade\\\\projeto-inovation\\\\openspec\\\\changes\\\\\\\"\",\"exitCode\":2,\"success\":false}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:12:41.431Z",
+      "lastAccessed": "2026-10-27T00:12:41.431Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:12:41.431Z"
+    },
+    "cmd-1793060026326": {
+      "key": "cmd-1793060026326",
+      "value": "{\"command\":\"ls \\\"C:\\\\Users\\\\Diego\\\\OneDrive\\\\Documentos\\\\04 - Estudos e Faculdade\\\\Projeto faculdade\\\\projeto-inovation\\\\openspec\\\\changes\\\" | FindStr /V \\\"archive\\\"\",\"exitCode\":1,\"success\":false}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:13:46.326Z",
+      "lastAccessed": "2026-10-27T00:13:46.326Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:13:46.326Z"
+    },
+    "cmd-1793060026512": {
+      "key": "cmd-1793060026512",
+      "value": "{\"command\":\"ls \\\"C:\\\\Users\\\\Diego\\\\OneDrive\\\\Documentos\\\\04 - Estudos e Faculdade\\\\Projeto faculdade\\\\projeto-inovation\\\\openspec\\\\changes\\\\archive\\\"\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:13:46.512Z",
+      "lastAccessed": "2026-10-27T00:13:46.512Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:13:46.512Z"
+    },
+    "cmd-1793060086075": {
+      "key": "cmd-1793060086075",
+      "value": "{\"command\":\"Get-ChildItem \\\"C:\\\\Users\\\\Diego\\\\OneDrive\\\\Documentos\\\\04 - Estudos e Faculdade\\\\Projeto faculdade\\\\projeto-inovation\\\\openspec\\\\changes\\\" | ForEach-Object { $_.Name }\",\"exitCode\":127,\"success\":false}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:14:46.075Z",
+      "lastAccessed": "2026-10-27T00:14:46.075Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:14:46.075Z"
+    },
+    "cmd-1793060094913": {
+      "key": "cmd-1793060094913",
+      "value": "{\"command\":\"Get-ChildItem \\\"C:\\\\Users\\\\Diego\\\\OneDrive\\\\Documentos\\\\04 - Estudos e Faculdade\\\\Projeto faculdade\\\\projeto-inovation\\\\openspec\\\\changes\\\" | ForEach-Object { if ($_.Name -ne \\\"archive\\\") { $_.Name } }\",\"exitCode\":2,\"success\":false}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:14:54.913Z",
+      "lastAccessed": "2026-10-27T00:14:54.913Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:14:54.913Z"
+    },
+    "cmd-1793060102044": {
+      "key": "cmd-1793060102044",
+      "value": "{\"command\":\"ls \\\"C:/Users/Diego/OneDrive/Documentos/04 - Estudos e Faculdade/Projeto faculdade/projeto-inovation/openspec/changes\\\"\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:15:02.044Z",
+      "lastAccessed": "2026-10-27T00:15:02.044Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:15:02.044Z"
+    },
+    "cmd-1793060124644": {
+      "key": "cmd-1793060124644",
+      "value": "{\"command\":\"ls \\\"C:/Users/Diego/OneDrive/Documentos/04 - Estudos e Faculdade/Projeto faculdade/projeto-inovation/.claude\\\"\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:15:24.644Z",
+      "lastAccessed": "2026-10-27T00:15:24.644Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:15:24.644Z"
+    },
+    "cmd-1793060263164": {
+      "key": "cmd-1793060263164",
+      "value": "{\"command\":\"which openspec 2>/dev/null || ls ~/.claude/plugins/reflex/openspec/openspec 2>/dev/null || find / -name openspec -type f 2>/dev/null | head -5\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:17:43.164Z",
+      "lastAccessed": "2026-10-27T00:17:43.164Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:17:43.164Z"
+    },
+    "cmd-1793060303151": {
+      "key": "cmd-1793060303151",
+      "value": "{\"command\":\"ls \\\"C:/Users/Diego/OneDrive/Documentos/04 - Estudos e Faculdade/Projeto faculdade/projeto-inovation/.claude/commands\\\" | findstr openspec\",\"exitCode\":1,\"success\":false}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:18:23.151Z",
+      "lastAccessed": "2026-10-27T00:18:23.151Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:18:23.151Z"
+    },
+    "cmd-1793060303429": {
+      "key": "cmd-1793060303429",
+      "value": "{\"command\":\"ls \\\"C:/Users/Diego/OneDrive/Documentos/04 - Estudos e Faculdade/Projeto faculdade/projeto-inovation/.claude/skills\\\"\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:18:23.429Z",
+      "lastAccessed": "2026-10-27T00:18:23.429Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:18:23.429Z"
+    },
+    "cmd-1793060580635": {
+      "key": "cmd-1793060580635",
+      "value": "{\"command\":\"mv \\\"openspec/changes/2026-10-22-codigo-verificacao-email\\\" \\\"openspec/changes/archive/\\\" && mv \\\"openspec/changes/2026-10-22-filtros-avancados-lateral\\\" \\\"openspec/changes/archive/\\\" && mv \\\"openspec/changes/2026-10-22-login-estado-usuario\\\" \\\"openspec/changes/archive/\\\" && mv \\\"openspec/changes/2026-10-22-pesquisa-expandida-remover-textos\\\" \\\"openspec/changes/archive/\\\" && mv \\\"openspec/changes/2026-10-22-validacao-cpf\\\" \\\"openspec/changes/archive/\\\" && mv \\\"openspec/changes/2026-10-22-xano-produtos\\\" \\\"openspec/changes/archive/\\\" && echo \\\"ARCHIVE_OK: 6 changes movidas para archive\\\"\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:23:00.635Z",
+      "lastAccessed": "2026-10-27T00:23:00.635Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:23:00.635Z"
+    },
+    "cmd-1793060639448": {
+      "key": "cmd-1793060639448",
+      "value": "{\"command\":\"ls openspec/changes && echo \\\"---\\\" && ls openspec/changes/archive | FindStr \\\"2026-10-22\\\"\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:23:59.448Z",
+      "lastAccessed": "2026-10-27T00:23:59.448Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:23:59.448Z"
+    },
+    "cmd-1793060832407": {
+      "key": "cmd-1793060832407",
+      "value": "{\"command\":\"rm \\\"C:/Users/Diego/OneDrive/Documentos/04 - Estudos e Faculdade/Projeto faculdade/projeto-inovation/openspec/changes/2026-10-26-user-data-cpf\\\"\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:27:12.407Z",
+      "lastAccessed": "2026-10-27T00:27:12.407Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:27:12.407Z"
+    },
+    "cmd-1793060853742": {
+      "key": "cmd-1793060853742",
+      "value": "{\"command\":\"ls \\\"C:\\\\Users\\\\Diego\\\\OneDrive\\\\Documentos\\\\04 - Estudos e Faculdade\\\\Projeto faculdade\\\\projeto-inovation\\\\openspec\\\\changes\\\\2026-10-26-user-data-cpf\\\" 2>/dev/null || echo \\\"Directory not found\\\"\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:27:33.742Z",
+      "lastAccessed": "2026-10-27T00:27:33.742Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:27:33.742Z"
+    },
+    "cmd-1793060853802": {
+      "key": "cmd-1793060853802",
+      "value": "{\"command\":\"ls \\\"C:\\\\Users\\\\Diego\\\\OneDrive\\\\Documentos\\\\04 - Estudos e Faculdade\\\\Projeto faculdade\\\\projeto-inovation\\\\openspec\\\\changes\\\\2026-10-26-user-profile-data-sync\\\" 2>/dev/null || echo \\\"Directory not found\\\"\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:27:33.802Z",
+      "lastAccessed": "2026-10-27T00:27:33.802Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:27:33.802Z"
+    },
+    "cmd-1793061042037": {
+      "key": "cmd-1793061042037",
+      "value": "{\"command\":\"ls -la \\\"openspec/changes/2026-10-26-user-profile-data-sync/\\\"\",\"exitCode\":2,\"success\":false}",
+      "namespace": "commands",
+      "storedAt": "2026-10-27T00:30:42.037Z",
+      "lastAccessed": "2026-10-27T00:30:42.037Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-26T00:30:42.037Z"
+    },
+    "cmd-1793155625146": {
+      "key": "cmd-1793155625146",
+      "value": "{\"command\":\"$env:PYTHONPATH = \\\"python\\\"; reflex --version 2>&1\",\"exitCode\":127,\"success\":false}",
+      "namespace": "commands",
+      "storedAt": "2026-10-28T02:47:05.146Z",
+      "lastAccessed": "2026-10-28T02:47:05.146Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-27T02:47:05.146Z"
+    },
+    "cmd-1793155625727": {
+      "key": "cmd-1793155625727",
+      "value": "{\"command\":\"ls python/\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-28T02:47:05.727Z",
+      "lastAccessed": "2026-10-28T02:47:05.727Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-27T02:47:05.727Z"
+    },
+    "cmd-1793155857816": {
+      "key": "cmd-1793155857816",
+      "value": "{\"command\":\"find . -name \\\"requirements.txt\\\" -o -name \\\"pyproject.toml\\\" -o -name \\\"setup.py\\\"\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-28T02:50:57.816Z",
+      "lastAccessed": "2026-10-28T02:50:57.816Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-27T02:50:57.816Z"
+    },
+    "cmd-1793155892674": {
+      "key": "cmd-1793155892674",
+      "value": "{\"command\":\"& .\\\\.venv\\\\Scripts\\\\python.exe -m reflex run --env dev --port 8002\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-28T02:51:32.674Z",
+      "lastAccessed": "2026-10-28T02:51:32.674Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-27T02:51:32.674Z"
+    },
+    "cmd-1793155939886": {
+      "key": "cmd-1793155939886",
+      "value": "{\"command\":\".venv/Scripts/python.exe -m reflex run --env dev --port 8002\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-28T02:52:19.886Z",
+      "lastAccessed": "2026-10-28T02:52:19.886Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-27T02:52:19.886Z"
+    },
+    "cmd-1793155980950": {
+      "key": "cmd-1793155980950",
+      "value": "{\"command\":\".venv/Scripts/python.exe -m reflex run --env dev --backend-port 8002\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-28T02:53:00.950Z",
+      "lastAccessed": "2026-10-28T02:53:00.950Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-27T02:53:00.950Z"
+    },
+    "cmd-1793156165196": {
+      "key": "cmd-1793156165196",
+      "value": "{\"command\":\"npm cache clean --force 2>&1 | tail -5\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-28T02:56:05.196Z",
+      "lastAccessed": "2026-10-28T02:56:05.196Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-27T02:56:05.196Z"
+    },
+    "cmd-1793719476422": {
+      "key": "cmd-1793719476422",
+      "value": "{\"command\":\"Get-Process | Where-Object { $_.ProcessName -match 'reflex|python|node|npm' } | Select-Object ProcessName, Id, CPU, StartTime | Sort-Object StartTime -Descending\",\"exitCode\":127,\"success\":false}",
+      "namespace": "commands",
+      "storedAt": "2026-11-03T15:24:36.422Z",
+      "lastAccessed": "2026-11-03T15:24:36.422Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-03T15:24:36.422Z"
+    },
+    "cmd-1793719497149": {
+      "key": "cmd-1793719497149",
+      "value": "{\"command\":\"ls -la ~/.claude/plugins/ 2>/dev/null || echo \\\"No plugins directory found\\\"\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-03T15:24:57.149Z",
+      "lastAccessed": "2026-11-03T15:24:57.149Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-03T15:24:57.149Z"
+    },
+    "cmd-1793719539217": {
+      "key": "cmd-1793719539217",
+      "value": "{\"command\":\"ls -la ~/.claude/plugins/store/ | head -30\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-03T15:25:39.217Z",
+      "lastAccessed": "2026-11-03T15:25:39.217Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-03T15:25:39.217Z"
+    },
+    "cmd-1793719540295": {
+      "key": "cmd-1793719540295",
+      "value": "{\"command\":\"pwd && ls -la\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-03T15:25:40.295Z",
+      "lastAccessed": "2026-11-03T15:25:40.295Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-03T15:25:40.295Z"
+    },
+    "cmd-1793720623790": {
+      "key": "cmd-1793720623790",
+      "value": "{\"command\":\"cd \\\"C:\\\\Users\\\\Diego\\\\OneDrive\\\\Documentos\\\\04 - Estudos e Faculdade\\\\Projeto faculdade\\\\projeto-inovation\\\" && git log --oneline -10\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-03T15:43:43.790Z",
+      "lastAccessed": "2026-11-03T15:43:43.790Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-03T15:43:43.790Z"
+    },
+    "cmd-1793720630677": {
+      "key": "cmd-1793720630677",
+      "value": "{\"command\":\"cd \\\"C:\\\\Users\\\\Diego\\\\OneDrive\\\\Documentos\\\\04 - Estudos e Faculdade\\\\Projeto faculdade\\\\projeto-inovation\\\" && ls -la openspec/changes/archive/\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-03T15:43:50.677Z",
+      "lastAccessed": "2026-11-03T15:43:50.677Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-03T15:43:50.677Z"
+    },
+    "cmd-1793720686802": {
+      "key": "cmd-1793720686802",
+      "value": "{\"command\":\"cd \\\"C:\\\\Users\\\\Diego\\\\OneDrive\\\\Documentos\\\\04 - Estudos e Faculdade\\\\Projeto faculdade\\\\projeto-inovation\\\" && git remote show origin && git config user.name && git config user.email\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-03T15:44:46.802Z",
+      "lastAccessed": "2026-11-03T15:44:46.802Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-03T15:44:46.802Z"
+    },
+    "cmd-1793720755485": {
+      "key": "cmd-1793720755485",
+      "value": "{\"command\":\"cd \\\"C:\\\\Users\\\\Diego\\\\OneDrive\\\\Documentos\\\\04 - Estudos e Faculdade\\\\Projeto faculdade\\\\projeto-inovation\\\" && git status\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-03T15:45:55.485Z",
+      "lastAccessed": "2026-11-03T15:45:55.485Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-03T15:45:55.485Z"
+    },
+    "cmd-1793721078046": {
+      "key": "cmd-1793721078046",
+      "value": "{\"command\":\"cd \\\"C:\\\\Users\\\\Diego\\\\OneDrive\\\\Documentos\\\\04 - Estudos e Faculdade\\\\Projeto faculdade\\\\projeto-inovation\\\" && git add .\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-03T15:51:18.046Z",
+      "lastAccessed": "2026-11-03T15:51:18.046Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-03T15:51:18.046Z"
+    },
+    "cmd-1793827300548": {
+      "key": "cmd-1793827300548",
+      "value": "{\"command\":\"git status\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-04T21:21:40.548Z",
+      "lastAccessed": "2026-11-04T21:21:40.548Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-04T21:21:40.548Z"
+    },
+    "cmd-1793827304546": {
+      "key": "cmd-1793827304546",
+      "value": "{\"command\":\"git status --porcelain | head -60\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-04T21:21:44.546Z",
+      "lastAccessed": "2026-11-04T21:21:44.546Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-04T21:21:44.546Z"
+    },
+    "cmd-1793827311134": {
+      "key": "cmd-1793827311134",
+      "value": "{\"command\":\"git remote -v\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-04T21:21:51.134Z",
+      "lastAccessed": "2026-11-04T21:21:51.134Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-04T21:21:51.134Z"
+    },
+    "cmd-1793827311465": {
+      "key": "cmd-1793827311465",
+      "value": "{\"command\":\"git diff reflex.lock/package.json\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-04T21:21:51.465Z",
+      "lastAccessed": "2026-11-04T21:21:51.465Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-04T21:21:51.465Z"
+    }
+  },
+  "version": "3.0.0"
+}
