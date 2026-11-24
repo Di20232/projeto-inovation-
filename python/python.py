@@ -92,9 +92,13 @@ def simulated_payments_enabled() -> bool:
     return os.getenv("NIGHTFALL_SIMULATED_PAYMENTS", "1").strip() != "0"
 
 
-def _form_text(form_data: dict[str, Any], field: str) -> str:
+def _form_value(form_data: dict[str, Any], field: str) -> str:
     value = form_data.get(field, "")
-    return value.strip() if isinstance(value, str) else ""
+    return value if isinstance(value, str) else ""
+
+
+def _form_text(form_data: dict[str, Any], field: str) -> str:
+    return _form_value(form_data, field).strip()
 
 
 def _digits(value: str) -> str:
@@ -104,6 +108,14 @@ def _digits(value: str) -> str:
 def normalize_asaas_credit_card_form(
     form_data: dict[str, Any],
 ) -> AsaasCreditCardFormData:
+    raw_card_number = _form_value(form_data, "card_number").strip()
+    if not raw_card_number:
+        raise ValueError("Informe o número do cartão.")
+    if not raw_card_number.isascii() or any(
+        character not in "0123456789 -" for character in raw_card_number
+    ):
+        raise ValueError("O número do cartão deve conter apenas dígitos.")
+
     normalized = {
         "holder_name": _form_text(form_data, "holder_name"),
         "holder_email": _form_text(form_data, "holder_email").lower(),
@@ -111,9 +123,11 @@ def normalize_asaas_credit_card_form(
         "postal_code": _digits(_form_text(form_data, "postal_code")),
         "address_number": _form_text(form_data, "address_number"),
         "phone": _digits(_form_text(form_data, "phone")),
-        "card_number": _digits(_form_text(form_data, "card_number")),
+        "card_number": "".join(
+            character for character in raw_card_number if character.isdigit()
+        ),
         "expiration": _form_text(form_data, "expiration"),
-        "ccv": _digits(_form_text(form_data, "ccv")),
+        "ccv": _form_value(form_data, "ccv"),
     }
 
     if not normalized["holder_name"] or "@" not in normalized["holder_email"]:
@@ -127,9 +141,11 @@ def normalize_asaas_credit_card_form(
     if len(normalized["phone"]) not in {10, 11}:
         raise ValueError("Informe um telefone com DDD para o titular do cartão.")
     if not 13 <= len(normalized["card_number"]) <= 19:
-        raise ValueError("Confira o número do cartão de teste.")
-    if len(normalized["ccv"]) not in {3, 4}:
-        raise ValueError("Confira o código de segurança do cartão de teste.")
+        raise ValueError("O número do cartão deve conter entre 13 e 19 dígitos.")
+    if not normalized["ccv"].isascii() or not normalized["ccv"].isdecimal():
+        raise ValueError("O CVV deve conter apenas números.")
+    if len(normalized["ccv"]) != 3:
+        raise ValueError("O CVV deve conter exatamente 3 dígitos.")
 
     try:
         expiration_date = datetime.strptime(normalized["expiration"], "%Y-%m")
@@ -1717,6 +1733,18 @@ class LoginState(rx.State):
         self.login_succeeded = False
 
     @rx.event
+    def reset_form(self):
+        self.email = ""
+        self.password = ""
+        self.login_message = ""
+        self.login_succeeded = False
+
+    @rx.event
+    def submit_on_enter(self, key: str):
+        if key == "Enter" and not self.is_submitting:
+            return LoginState.login
+
+    @rx.event
     async def login(self):
         email = self.email.strip().lower()
         password = self.password
@@ -2851,6 +2879,7 @@ def login_page() -> rx.Component:
                         type="email",
                         value=LoginState.email,
                         on_change=LoginState.set_email,
+                        on_key_down=LoginState.submit_on_enter,
                         placeholder="voce@exemplo.com",
                         aria_label="E-mail",
                         required=True,
@@ -2880,6 +2909,7 @@ def login_page() -> rx.Component:
                         type="password",
                         value=LoginState.password,
                         on_change=LoginState.set_password,
+                        on_key_down=LoginState.submit_on_enter,
                         placeholder="Sua senha",
                         aria_label="Senha",
                         required=True,
@@ -4304,9 +4334,13 @@ def checkout_page() -> rx.Component:
                                     ),
                                     rx.input(
                                         name="card_number",
+                                        type="text",
                                         input_mode="numeric",
-                                        placeholder="0000 0000 0000 0000",
+                                        placeholder="0000000000000000",
                                         autocomplete="cc-number",
+                                        max_length=19,
+                                        pattern="[0-9]{13,19}",
+                                        title="Digite apenas números (13 a 19 dígitos).",
                                         required=True,
                                         width="100%",
                                         height="48px",
@@ -4380,6 +4414,9 @@ def checkout_page() -> rx.Component:
                                             type="password",
                                             input_mode="numeric",
                                             autocomplete="cc-csc",
+                                            max_length=3,
+                                            pattern="[0-9]{3}",
+                                            title="Digite exatamente 3 números no CVV.",
                                             required=True,
                                             width="100%",
                                             height="48px",
@@ -4488,7 +4525,7 @@ def checkout_page() -> rx.Component:
                                 "Confirmar Pedido (simulado)",
                                 rx.cond(
                                     CatalogState.payment_method == "credit_card",
-                                    "Criar cobrança no Asaas Sandbox",
+                                    "Ir para pagamento seguro",
                                     "Confirmar Pedido",
                                 ),
                             ),
@@ -4509,7 +4546,7 @@ def checkout_page() -> rx.Component:
                             CatalogState.payment_message != "",
                             rx.text(
                                 CatalogState.payment_message,
-                                color="#a1a1aa",
+                                color="#fca5a5",
                                 font_size="13px",
                                 text_align="center",
                             ),
@@ -4531,6 +4568,7 @@ def checkout_page() -> rx.Component:
                     align="start",
                 ),
                     on_submit=CatalogState.finalize_order,
+                    no_validate=True,
                     reset_on_submit=True,
                     ),
                 width="100%",
@@ -5697,7 +5735,7 @@ def admin_page() -> rx.Component:
 
 app = rx.App()
 app.add_page(index, route="/", on_load=CatalogState.refresh_catalog)
-app.add_page(login_page, route="/login", title="Entrar | NightFall")
+app.add_page(login_page, route="/login", title="Entrar | NightFall", on_load=LoginState.reset_form)
 app.add_page(registration_page, route="/cadastro", title="Criar conta | NightFall")
 app.add_page(cart_page, route="/carrinho", title="Carrinho de Compras | NightFall")
 app.add_page(checkout_page, route="/pagamento", title="Pagamento | NightFall")

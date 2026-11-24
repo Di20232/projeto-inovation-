@@ -17,7 +17,7 @@ class AsaasCreditCardPaymentTests(unittest.TestCase):
             "postal_code": "01001-000",
             "address_number": "100",
             "phone": "(11) 99999-9999",
-            "card_number": "4539 6560 4839 2220",
+            "card_number": "4539656048392220",
             "expiration": "2099-12",
             "ccv": "123",
         }
@@ -28,7 +28,7 @@ class AsaasCreditCardPaymentTests(unittest.TestCase):
                 "holder_name": "Cliente de Teste",
                 "holder_email": "forged@example.com",
                 "cpf_cnpj": "111.111.111-11",
-                "card_number": "4539 6560 4839 2220",
+                "card_number": "4539656048392220",
                 "expiration": "2099-12",
                 "ccv": "123",
             },
@@ -87,6 +87,51 @@ class AsaasCreditCardPaymentTests(unittest.TestCase):
         self.form_data["expiration"] = "2020-01"
 
         with self.assertRaisesRegex(ValueError, "validade do cartão precisa ser futura"):
+            normalize_asaas_credit_card_form(self.form_data)
+
+    def test_rejects_card_number_outside_conventional_length(self):
+        for card_number in ("123456789012", "12345678901234567890"):
+            with self.subTest(card_number_length=len(card_number)):
+                self.form_data["card_number"] = card_number
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "número do cartão deve conter entre 13 e 19 dígitos",
+                ):
+                    normalize_asaas_credit_card_form(self.form_data)
+
+    def test_rejects_non_digit_card_number(self):
+        self.form_data["card_number"] = "453965604839222x"
+
+        with self.assertRaisesRegex(ValueError, "cartão deve conter apenas dígitos"):
+            normalize_asaas_credit_card_form(self.form_data)
+
+    def test_normalizes_common_card_number_separators(self):
+        self.form_data["card_number"] = "4539 6560-4839 2220"
+
+        card_form = normalize_asaas_credit_card_form(self.form_data)
+
+        self.assertEqual(card_form["card_number"], "4539656048392220")
+
+    def test_rejects_missing_card_number_with_specific_message(self):
+        self.form_data["card_number"] = ""
+
+        with self.assertRaisesRegex(ValueError, "Informe o número do cartão"):
+            normalize_asaas_credit_card_form(self.form_data)
+
+    def test_rejects_cvv_outside_conventional_length(self):
+        for ccv in ("12", "1234"):
+            with self.subTest(cvv_length=len(ccv)):
+                self.form_data["ccv"] = ccv
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "CVV deve conter exatamente 3 dígitos",
+                ):
+                    normalize_asaas_credit_card_form(self.form_data)
+
+    def test_rejects_non_digit_cvv(self):
+        self.form_data["ccv"] = "12a"
+
+        with self.assertRaisesRegex(ValueError, "CVV deve conter apenas números"):
             normalize_asaas_credit_card_form(self.form_data)
 
     def test_rejects_invalid_cpf(self):
