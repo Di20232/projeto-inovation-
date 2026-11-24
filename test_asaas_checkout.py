@@ -2,6 +2,7 @@ import unittest
 from decimal import Decimal
 
 from python.python import (
+    build_asaas_credit_card_form_data,
     build_asaas_credit_card_payment_payload,
     normalize_asaas_credit_card_form,
 )
@@ -20,6 +21,30 @@ class AsaasCreditCardPaymentTests(unittest.TestCase):
             "expiration": "2099-12",
             "ccv": "123",
         }
+
+    def test_builds_card_form_from_visible_fields_and_server_profile(self):
+        card_form = build_asaas_credit_card_form_data(
+            {
+                "holder_name": "Cliente de Teste",
+                "holder_email": "forged@example.com",
+                "cpf_cnpj": "111.111.111-11",
+                "card_number": "4539 6560 4839 2220",
+                "expiration": "2099-12",
+                "ccv": "123",
+            },
+            holder_email=" CLIENTE@example.com ",
+            cpf_cnpj="529.982.247-25",
+            phone="(11) 99999-9999",
+            postal_code="01001-000",
+            address_number=" 100 ",
+        )
+
+        self.assertEqual(card_form["holder_email"], "cliente@example.com")
+        self.assertEqual(card_form["cpf_cnpj"], "52998224725")
+        self.assertEqual(card_form["phone"], "11999999999")
+        self.assertEqual(card_form["postal_code"], "01001000")
+        self.assertEqual(card_form["address_number"], "100")
+        self.assertEqual(card_form["card_number"], "4539656048392220")
 
     def test_builds_sandbox_payment_payload_without_card_formatting(self):
         form_data = normalize_asaas_credit_card_form(self.form_data)

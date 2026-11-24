@@ -1,6 +1,11 @@
 assets/external/
 *.py[cod]
 .web
+!/.web/
+.web/*
+!.web/app/
+.web/app/*
+!.web/app/routes.js
 .states
 *.db
 __pycache__/

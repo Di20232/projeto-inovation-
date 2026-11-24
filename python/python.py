@@ -143,6 +143,27 @@ def normalize_asaas_credit_card_form(
     return dict(normalized) # type: ignore
 
 
+def build_asaas_credit_card_form_data(
+    card_fields: dict[str, Any],
+    *,
+    holder_email: str,
+    cpf_cnpj: str,
+    phone: str,
+    postal_code: str,
+    address_number: str,
+) -> AsaasCreditCardFormData:
+    return normalize_asaas_credit_card_form(
+        {
+            **card_fields,
+            "holder_email": holder_email,
+            "cpf_cnpj": cpf_cnpj,
+            "phone": phone,
+            "postal_code": postal_code,
+            "address_number": address_number,
+        }
+    )
+
+
 def build_asaas_credit_card_payment_payload(
     total: Decimal,
     external_reference: str,
@@ -1055,7 +1076,14 @@ class CatalogState(rx.State):
                 )
                 return
 
-            card_form = normalize_asaas_credit_card_form(form_data)
+            card_form = build_asaas_credit_card_form_data(
+                form_data,
+                holder_email=auth_state.user_email,
+                cpf_cnpj=auth_state.user_cpf,
+                phone=auth_state.user_phone,
+                postal_code=self.shipping_cep,
+                address_number=self.shipping_number,
+            )
 
             total = Decimal(str(self.cart_final_total)).quantize(Decimal("0.01"))
             if total <= 0:
@@ -2095,10 +2123,10 @@ def product_card(product: Any) -> rx.Component:
         cursor="pointer",
         _hover={"background": "transparent"},
     )
-    # Botão só visual: sem on_click, sem link e sem estado.
     buy_button = rx.button(
         "Comprar +",
         type="button",
+        on_click=CatalogState.add_to_cart(product["name"]),
         aria_label=f"Comprar {product['name']}",
         width="100%",
         max_width="100%",
@@ -2120,9 +2148,8 @@ def product_card(product: Any) -> rx.Component:
         display="flex",
         flex_direction="column",
         gap="14px",
-        width="280px",
-        flex="1 1 280px",
-        max_width="320px",
+        width="100%",
+        max_width="100%",
         min_width="0",
         min_height="460px",
         height="100%",
@@ -2696,7 +2723,7 @@ def product_catalog() -> rx.Component:
             rx.grid(
                 rx.foreach(CatalogState.filtered_products, product_card),
                 columns="2",
-                gap="32px",
+                gap="35px",
                 width="100%",
             ),
             rx.text(
@@ -4264,145 +4291,73 @@ def checkout_page() -> rx.Component:
                             CatalogState.payment_method == "credit_card",
                             rx.vstack(
                                 rx.heading(
-                                    "Dados do cartão e do titular",
+                                    "Dados do cartão",
                                     size="4",
                                     color="#f5f3ff",
                                 ),
-                                rx.text(
-                                    "Sandbox: use somente cartões fictícios de teste. "
-                                    "Nunca informe um cartão real. O formulário exige "
-                                    "HTTPS fora do localhost.",
-                                    color="#fbbf24",
-                                    font_size="13px",
-                                    text_align="center",
-                                ),
-                                rx.link(
-                                    "Consultar cartões de teste do Asaas",
-                                    href="https://docs.asaas.com/docs/testando-pagamento-com-cart%C3%A3o-de-cr%C3%A9dito",
-                                    target="_blank",
-                                    color="#c4b5fd",
-                                    font_size="13px",
-                                ),
-                                rx.flex(
-                                    rx.vstack(
-                                        rx.text("Nome impresso no cartão", color="#e4e4e7", font_size="13px", font_weight="600"),
-                                        rx.input(
-                                            name="holder_name",
-                                            default_value=AuthState.user_name,
-                                            placeholder="Nome do titular",
-                                            autocomplete="on",
-                                            required=True,
-                                            width="100%",
-                                            height="42px",
-                                            background="#11111a",
-                                            border="1px solid rgba(167, 139, 250, 0.24)",
-                                            border_radius="10px",
-                                            color="#f5f3ff",
-                                        ),
-                                        width="100%",
-                                        flex="1",
-                                        spacing="2",
-                                        align="start",
+                                rx.vstack(
+                                    rx.text(
+                                        "Número do cartão",
+                                        color="#e4e4e7",
+                                        font_size="13px",
+                                        font_weight="600",
                                     ),
-                                    rx.vstack(
-                                        rx.text("E-mail do titular", color="#e4e4e7", font_size="13px", font_weight="600"),
-                                        rx.input(
-                                            name="holder_email",
-                                            type="email",
-                                            default_value=AuthState.user_email,
-                                            placeholder="nome@exemplo.com",
-                                            autocomplete="on",
-                                            required=True,
-                                            width="100%",
-                                            height="42px",
-                                            background="#11111a",
-                                            border="1px solid rgba(167, 139, 250, 0.24)",
-                                            border_radius="10px",
-                                            color="#f5f3ff",
-                                        ),
+                                    rx.input(
+                                        name="card_number",
+                                        input_mode="numeric",
+                                        placeholder="0000 0000 0000 0000",
+                                        autocomplete="cc-number",
+                                        required=True,
                                         width="100%",
-                                        flex="1",
-                                        spacing="2",
-                                        align="start",
+                                        height="48px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
                                     ),
-                                    spacing="4",
                                     width="100%",
-                                    wrap="wrap",
+                                    spacing="2",
+                                    align="start",
                                 ),
-                                rx.flex(
-                                    rx.vstack(
-                                        rx.text("CPF do titular", color="#e4e4e7", font_size="13px", font_weight="600"),
-                                        rx.input(
-                                            name="cpf_cnpj",
-                                            default_value=AuthState.user_cpf,
-                                            placeholder="000.000.000-00",
-                                            autocomplete="off",
-                                            required=True,
-                                            width="100%",
-                                            height="42px",
-                                            background="#11111a",
-                                            border="1px solid rgba(167, 139, 250, 0.24)",
-                                            border_radius="10px",
-                                            color="#f5f3ff",
-                                        ),
-                                        width="100%",
-                                        flex="1",
-                                        spacing="2",
-                                        align="start",
+                                rx.vstack(
+                                    rx.text(
+                                        "Nome do titular",
+                                        color="#e4e4e7",
+                                        font_size="13px",
+                                        font_weight="600",
                                     ),
-                                    rx.vstack(
-                                        rx.text("Telefone com DDD", color="#e4e4e7", font_size="13px", font_weight="600"),
-                                        rx.input(
-                                            name="phone",
-                                            default_value=AuthState.user_phone,
-                                            placeholder="11999999999",
-                                            autocomplete="on",
-                                            required=True,
-                                            width="100%",
-                                            height="42px",
-                                            background="#11111a",
-                                            border="1px solid rgba(167, 139, 250, 0.24)",
-                                            border_radius="10px",
-                                            color="#f5f3ff",
-                                        ),
+                                    rx.input(
+                                        name="holder_name",
+                                        default_value=AuthState.user_name,
+                                        placeholder="Como aparece no cartão",
+                                        autocomplete="cc-name",
+                                        required=True,
                                         width="100%",
-                                        flex="1",
-                                        spacing="2",
-                                        align="start",
+                                        height="48px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
                                     ),
-                                    spacing="4",
                                     width="100%",
-                                    wrap="wrap",
+                                    spacing="2",
+                                    align="start",
                                 ),
                                 rx.flex(
                                     rx.vstack(
-                                        rx.text("Número do cartão", color="#e4e4e7", font_size="13px", font_weight="600"),
-                                        rx.input(
-                                            name="card_number",
-                                            input_mode="numeric",
-                                            placeholder="Número do cartão de teste",
-                                            autocomplete="off",
-                                            required=True,
-                                            width="100%",
-                                            height="42px",
-                                            background="#11111a",
-                                            border="1px solid rgba(167, 139, 250, 0.24)",
-                                            border_radius="10px",
-                                            color="#f5f3ff",
+                                        rx.text(
+                                            "Data de vencimento",
+                                            color="#e4e4e7",
+                                            font_size="13px",
+                                            font_weight="600",
                                         ),
-                                        width="100%",
-                                        spacing="2",
-                                        align="start",
-                                    ),
-                                    rx.vstack(
-                                        rx.text("Validade", color="#e4e4e7", font_size="13px", font_weight="600"),
                                         rx.input(
                                             name="expiration",
                                             type="month",
-                                            autocomplete="off",
+                                            autocomplete="cc-exp",
                                             required=True,
                                             width="100%",
-                                            height="42px",
+                                            height="48px",
                                             background="#11111a",
                                             border="1px solid rgba(167, 139, 250, 0.24)",
                                             border_radius="10px",
@@ -4414,60 +4369,20 @@ def checkout_page() -> rx.Component:
                                         align="start",
                                     ),
                                     rx.vstack(
-                                        rx.text("CVV", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                        rx.text(
+                                            "CVV",
+                                            color="#e4e4e7",
+                                            font_size="13px",
+                                            font_weight="600",
+                                        ),
                                         rx.input(
                                             name="ccv",
                                             type="password",
                                             input_mode="numeric",
-                                            autocomplete="off",
+                                            autocomplete="cc-csc",
                                             required=True,
                                             width="100%",
-                                            height="42px",
-                                            background="#11111a",
-                                            border="1px solid rgba(167, 139, 250, 0.24)",
-                                            border_radius="10px",
-                                            color="#f5f3ff",
-                                        ),
-                                        width="100%",
-                                        flex="1",
-                                        spacing="2",
-                                        align="start",
-                                    ),
-                                    spacing="4",
-                                    width="100%",
-                                    wrap="wrap",
-                                ),
-                                rx.flex(
-                                    rx.vstack(
-                                        rx.text("CEP de cobrança", color="#e4e4e7", font_size="13px", font_weight="600"),
-                                        rx.input(
-                                            name="postal_code",
-                                            default_value=CatalogState.shipping_cep,
-                                            placeholder="00000-000",
-                                            autocomplete="on",
-                                            required=True,
-                                            width="100%",
-                                            height="42px",
-                                            background="#11111a",
-                                            border="1px solid rgba(167, 139, 250, 0.24)",
-                                            border_radius="10px",
-                                            color="#f5f3ff",
-                                        ),
-                                        width="100%",
-                                        flex="1",
-                                        spacing="2",
-                                        align="start",
-                                    ),
-                                    rx.vstack(
-                                        rx.text("Número do endereço de cobrança", color="#e4e4e7", font_size="13px", font_weight="600"),
-                                        rx.input(
-                                            name="address_number",
-                                            default_value=CatalogState.shipping_number,
-                                            placeholder="Número",
-                                            autocomplete="off",
-                                            required=True,
-                                            width="100%",
-                                            height="42px",
+                                            height="48px",
                                             background="#11111a",
                                             border="1px solid rgba(167, 139, 250, 0.24)",
                                             border_radius="10px",
