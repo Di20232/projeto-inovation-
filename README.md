@@ -1,29 +1,49 @@
 # NightFall — Loja Virtual de Tecnologia e Computadores
 
-Aplicação web full-stack desenvolvida em **Python** utilizando o framework **Reflex**, com integração de backend e banco de dados via **Xano** e estilização moderna com Tailwind v4 e Radix Themes.
+Aplicação web full-stack desenvolvida em **Python** com o framework **Reflex**, com backend e banco de dados via **Xano**, pagamentos via **Asaas (Sandbox)** e estilização com Tailwind v4 e Radix Themes.
 
 ---
 
 ## 🚀 Funcionalidades Principais
 
-- **Catálogo de Produtos**: Exibição de computadores, hardware e acessórios com busca dinâmica e painel de filtros avançados (preço e marca).
-- **Autenticação de Usuários**: Fluxo completo de cadastro (`/cadastro`) e login (`/login`), com validação de CPF e formatação brasileira de data de nascimento (`DD/MM/YYYY`).
-- **Gerenciamento de Perfil (`/perfil`)**:
-  - **Meus Dados**: Visualização e atualização de nome, e-mail, CPF e data de nascimento.
-  - **Endereços**: Gerenciamento de múltiplos endereços com preenchimento automático por CEP (**ViaCEP**).
-  - **Meus Pedidos**: Histórico de compras e status de pedidos.
-- **Carrinho e Checkout**: Carrinho de compras dedicado, aplicação de cupons promocionais e fluxo de pagamento com validação de endereço.
-- **Segurança e Persistência**: Schemas de banco de dados estruturados para persistir dados de usuários e endereços.
+- **Catálogo de Produtos** (`/`): computadores, hardware e acessórios com busca dinâmica e filtros avançados (preço e marca).
+- **Autenticação** (`/cadastro`, `/login`): cadastro com validação de CPF e data de nascimento no formato brasileiro (`DD/MM/YYYY`). O login usa o Xano quando `XANO_LOGIN_URL` está configurada; sem ela, funciona um login local de desenvolvimento.
+- **Perfil** (`/perfil`):
+  - **Meus Dados**: visualização e atualização de nome, e-mail, CPF e data de nascimento.
+  - **Endereços**: múltiplos endereços, com preenchimento automático por CEP (**ViaCEP**).
+  - **Meus Pedidos**: histórico e status dos pedidos.
+- **Carrinho** (`/carrinho`) e **Checkout** (`/pagamento`): cupons promocionais, exigência de endereço de entrega completo antes de criar o pedido e pagamento com cartão via Asaas Sandbox.
+- **Painel Administrativo** (`/admin`): gestão de produtos e pedidos, acessível apenas a administradores verificados no servidor.
+- **Persistência de pedidos**: pedidos gravados no Xano (`order_persistence.py`, `xano_orders_setup.py`, ver `xano-orders-docs.md`).
 
 ---
 
 ## 🛠️ Tecnologias Utilizadas
 
 - **Frontend & Backend**: Python 3, [Reflex](https://reflex.dev) v0.9.12
-- **Estilização**: Tailwind CSS v4 & Radix Themes
-- **Banco de Dados / API**: Xano (`.xs` schemas)
-- **Integração de CEP**: ViaCEP API
-- **Arquitetura de Mudanças**: OpenSpec
+- **Estilização**: Tailwind CSS v4 e Radix Themes
+- **Banco de Dados / API**: [Xano](https://www.xano.com) (schemas `.xs`)
+- **Pagamentos**: Asaas (Sandbox)
+- **CEP**: API ViaCEP
+- **Fluxo de mudanças**: OpenSpec (`openspec/`)
+
+---
+
+## 🗂️ Estrutura do Projeto
+
+| Caminho | Descrição |
+|---|---|
+| `python/python.py` | App Reflex: estados, páginas e rotas |
+| `python/catalog.json` | Catálogo local de produtos |
+| `admin_auth.py` | Verificação de administrador no servidor |
+| `asaas_service.py` | Integração com o Asaas |
+| `order_persistence.py` | Persistência de pedidos no Xano |
+| `scripts/gerar_hash_admin.py` | Gera o hash da senha do admin |
+| `seed_xano_products.py` | Popula produtos no Xano |
+| `xano/nightfall-user-auth/` | API de autenticação do Xano (`signup`, `login`, `me`) e tabela `usuario` |
+| `table/`, `api/`, `function/` | Schemas e endpoints Xano (`.xs`) |
+| `openspec/` | Specs e propostas de mudança |
+| `projeto/docs/` | Visão geral e modelo de domínio |
 
 ---
 
@@ -35,37 +55,75 @@ Aplicação web full-stack desenvolvida em **Python** utilizando o framework **R
    cd projeto-inovation-
    ```
 
-2. **Ative o ambiente virtual (`venv`)**:
-   - No Windows (PowerShell):
-     ```powershell
-     .\venv\Scripts\Activate.ps1
-     ```
+2. **Crie e ative o ambiente virtual e instale as dependências**:
+   ```powershell
+   python -m venv venv
+   .\venv\Scripts\Activate.ps1      # Windows (PowerShell)
+   pip install -r requirements.txt
+   ```
 
-3. **Inicie a aplicação Reflex**:
+3. **Configure as variáveis de ambiente**: copie `.env.example` para `.env` e preencha (veja a seção abaixo).
+
+4. **Inicie a aplicação**:
    ```bash
    reflex run
    ```
 
-4. **Acesse no navegador**:
-   - `http://localhost:3000/` (ou `http://localhost:3001/`)
+5. **Acesse no navegador**: `http://localhost:3000/` (o backend usa a porta `8003`).
 
 ---
 
-## Integração de Pagamento (Asaas Sandbox)
+## ⚙️ Variáveis de Ambiente (`.env`)
+
+| Variável | Para que serve |
+|---|---|
+| `XANO_SIGNUP_URL` | Endpoint de cadastro no Xano |
+| `XANO_PRODUCTS_URL` | Endpoint de produtos no Xano |
+| `XANO_LOGIN_URL` | Endpoint de login no Xano. Vazio = login local de desenvolvimento |
+| `ADMIN_EMAIL` | E-mail do administrador local |
+| `ADMIN_PASSWORD_HASH` | Hash PBKDF2-SHA256 da senha do admin |
+| `ASAAS_API_KEY` | Chave do **Sandbox** do Asaas |
+| `NIGHTFALL_SIMULATED_PAYMENTS` | `1` (padrão) usa pagamento simulado em localhost quando não há `ASAAS_API_KEY`; `0` desliga |
+
+Reinicie o Reflex depois de alterar o `.env`.
+
+---
+
+## 🔐 Administrador
+
+A credencial do admin **não fica no código**. O acesso é decidido no servidor por:
+
+- **Admin local (`.env`)**: `ADMIN_EMAIL` + `ADMIN_PASSWORD_HASH`. Gere o hash sem exibir a senha com:
+  ```bash
+  python scripts/gerar_hash_admin.py
+  ```
+  Sem essas duas variáveis, ninguém é admin pelo `.env`.
+- **Xano**: campo `is_admin` na tabela `usuario`; o login devolve `authToken` e `user.is_admin`. Depende de publicar os `.xs` de `xano/nightfall-user-auth/` no workspace do Xano.
+
+O cadastro nunca concede admin e o logout limpa o token.
+
+---
+
+## 💳 Integração de Pagamento (Asaas Sandbox)
 
 - Configure `ASAAS_API_KEY` no `.env` com uma chave do Sandbox.
-- A aplicação carrega o `.env` ao iniciar; reinicie o Reflex após alterar a chave.
 - O formulário de cartão cria/usa o cliente e registra uma cobrança de teste no Asaas.
 - Use somente cartões fictícios de teste; o Sandbox não movimenta dinheiro.
 - Os dados do cartão não são salvos pelo NightFall. HTTPS é obrigatório fora do localhost.
 - Pix e boleto ainda não estão integrados.
 
+---
+
 ## 🧪 Testes Automatizados Locais
 
-Para executar os testes automatizados de rotas:
-```python
-python test_app_local.py
+```bash
+python test_app_local.py        # rotas da aplicação
+python tests_unitarios.py       # testes unitários
+python tests_admin_auth.py      # autenticação de admin
+python test_asaas_checkout.py   # checkout com Asaas
 ```
+
+`test_xano_live.py` e `test_xano_orders.py` chamam o Xano real e exigem as variáveis configuradas.
 
 ---
 
