@@ -15,6 +15,10 @@ Aplicação web full-stack desenvolvida em **Python** utilizando o framework **R
 - **Carrinho e Checkout**: Carrinho de compras dedicado, aplicação de cupons promocionais e fluxo de pagamento com validação de endereço.
 - **Segurança e Persistência**: Schemas de banco de dados estruturados para persistir dados de usuários e endereços.
 
+### Autenticação
+
+Por padrão, contas são salvas em `auth_users.sqlite3`; senhas são armazenadas somente como hashes PBKDF2-SHA256 e cada e-mail pode ser cadastrado uma única vez. Configure `NIGHTFALL_AUTH_DB` para apontar o banco a um volume persistente no ambiente de hospedagem. O Xano é opcional: para usá-lo como fonte de autenticação, publique os endpoints de cadastro e login e configure `XANO_SIGNUP_URL` e `XANO_LOGIN_URL`. Falhas no login do Xano não liberam acesso localmente.
+
 ---
 
 ## 🛠️ Tecnologias Utilizadas

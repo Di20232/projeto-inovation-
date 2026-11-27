@@ -1758,8 +1758,10 @@ class LoginState(rx.State):
         self.login_succeeded = False
         self.is_submitting = True
         try:
+            from auth_persistence import AuthStorageError, authenticate_account
             from admin_auth import XanoUnavailable, check_env_admin, is_env_admin_email, xano_login
 
+            account = None
             # 1) Admin do .env (hash PBKDF2), verificado no servidor.
             is_env_admin = await asyncio.to_thread(check_env_admin, email, password)
             # 2) Xano, se XANO_LOGIN_URL estiver configurada: ele decide login e is_admin.
@@ -1781,8 +1783,8 @@ class LoginState(rx.State):
             elif xano_result is not None:
                 accepted, is_admin, token = xano_result.ok, xano_result.is_admin, xano_result.token
             else:
-                # Sem Xano configurado: modo de desenvolvimento, sem privilégio de admin.
-                accepted, is_admin, token = ("@" in email and len(password) >= 6), False, ""
+                account = await asyncio.to_thread(authenticate_account, email, password)
+                accepted, is_admin, token = account is not None, False, ""
 
             if accepted:
                 self.login_message = "Login realizado com sucesso!"
@@ -1796,12 +1798,15 @@ class LoginState(rx.State):
                 auth_state.user_email = email
                 auth_state.orders = []
                 auth_state._refresh_orders()
-                name_part = email.split("@")[0]
-                auth_state.user_name = name_part.capitalize()
-                if not auth_state.user_cpf:
-                    auth_state.user_cpf = "123.456.789-09"
-                if not auth_state.user_birth_date:
-                    auth_state.user_birth_date = "15/05/1995"
+                if account is not None:
+                    auth_state.user_name = account["name"]
+                elif xano_result is not None and xano_result.name:
+                    auth_state.user_name = xano_result.name
+                else:
+                    auth_state.user_name = email.split("@")[0].capitalize()
+                if account is not None and not is_env_admin:
+                    auth_state.user_cpf = format_cpf(account["cpf"])
+                    auth_state.user_birth_date = format_birth_date(account["birth_date"])
 
                 target = auth_state.redirect_after_login if auth_state.redirect_after_login else "/"
                 auth_state.redirect_after_login = ""
@@ -1813,8 +1818,8 @@ class LoginState(rx.State):
                 return rx.redirect(target)
             else:
                 self.login_message = "Credenciais inválidas. Verifique seu e-mail e senha."
-        except Exception:
-            self.login_message = "Erro ao conectar com o serviço de autenticação."
+        except AuthStorageError:
+            self.login_message = "Não foi possível acessar as contas cadastradas. Tente novamente."
         finally:
             self.is_submitting = False
 
@@ -1929,7 +1934,15 @@ class RegistrationState(rx.State):
             self.registration_succeeded = False
             return
 
-        if not email:
+        from auth_persistence import (
+            AccountAlreadyExists,
+            AuthStorageError,
+            create_account,
+            is_valid_email,
+        )
+        from admin_auth import xano_login_url
+
+        if not is_valid_email(email):
             self.registration_message = "Informe um e-mail válido."
             self.registration_succeeded = False
             self.password = ""
@@ -1941,41 +1954,59 @@ class RegistrationState(rx.State):
             self.password = ""
             return
 
-        signup_url = os.getenv("XANO_SIGNUP_URL", DEFAULT_XANO_SIGNUP_URL).strip()
-        try:
-            parsed_signup_url = urlparse(signup_url)
-        except ValueError:
-            parsed_signup_url = None
+        use_xano = bool(xano_login_url())
+        signup_url = ""
+        if use_xano:
+            signup_url = os.getenv("XANO_SIGNUP_URL", DEFAULT_XANO_SIGNUP_URL).strip()
+            try:
+                parsed_signup_url = urlparse(signup_url)
+            except ValueError:
+                parsed_signup_url = None
 
-        if (
-            parsed_signup_url is None
-            or parsed_signup_url.scheme != "https"
-            or not parsed_signup_url.netloc
-        ):
-            self.registration_message = "Cadastro indisponível: configure o endpoint do Xano."
-            self.registration_succeeded = False
-            self.password = ""
-            return
+            if (
+                parsed_signup_url is None
+                or parsed_signup_url.scheme != "https"
+                or not parsed_signup_url.netloc
+            ):
+                self.registration_message = "Cadastro indisponível: configure o endpoint do Xano."
+                self.registration_succeeded = False
+                self.password = ""
+                return
 
         self.registration_message = ""
         self.registration_succeeded = False
         self.is_submitting = True
         try:
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
-                response = await client.post(
-                    signup_url,
-                    json={
-                        "name": name,
-                        "cpf": cpf,
-                        "birth_date": birth_date,
-                        "email": email,
-                        "password": password,
-                    },
+            if use_xano:
+                async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+                    response = await client.post(
+                        signup_url,
+                        json={
+                            "name": name,
+                            "cpf": cpf,
+                            "birth_date": birth_date,
+                            "email": email,
+                            "password": password,
+                        },
+                    )
+                    response.raise_for_status()
+                    signup_result = response.json()
+            else:
+                await asyncio.to_thread(
+                    create_account,
+                    name=name,
+                    email=email,
+                    cpf=cpf,
+                    birth_date=birth_date,
+                    password=password,
                 )
-                response.raise_for_status()
-                signup_result = response.json()
+                signup_result = {"success": True}
+        except AccountAlreadyExists:
+            self.registration_message = "Este e-mail já está cadastrado."
+        except AuthStorageError:
+            self.registration_message = "Não foi possível salvar sua conta. Tente novamente."
         except httpx.HTTPStatusError as error:
-            if error.response.status_code == 403:
+            if error.response.status_code in {403, 409}:
                 self.registration_message = "Este e-mail já está cadastrado."
             elif error.response.status_code in {400, 422}:
                 self.registration_message = (
@@ -1993,7 +2024,12 @@ class RegistrationState(rx.State):
         except ValueError:
             self.registration_message = "O Xano retornou uma resposta inválida."
         else:
-            if isinstance(signup_result, dict) and signup_result.get("success") is True:
+            signup_confirmed = isinstance(signup_result, dict) and (
+                signup_result.get("success") is True
+                or isinstance(signup_result.get("authToken"), str)
+                and bool(signup_result["authToken"])
+            )
+            if signup_confirmed:
                 self.registration_message = (
                     "Conta criada com sucesso. Bem-vindo ao NightFall!"
                 )
@@ -2012,6 +2048,11 @@ class RegistrationState(rx.State):
                 auth_state._refresh_orders()
                 auth_state.user_cpf = format_cpf(cpf)
                 auth_state.user_birth_date = format_birth_date(birth_date)
+                auth_state._auth_token = (
+                    signup_result.get("authToken", "")
+                    if isinstance(signup_result.get("authToken"), str)
+                    else ""
+                )
 
                 # Limpa os campos do formulário de cadastro
                 self.name = ""

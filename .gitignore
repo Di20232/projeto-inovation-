@@ -18,3 +18,6 @@ __pycache__/
 
 # Pedidos locais (contém e-mails de clientes)
 orders_db.json
+
+# Contas locais (contém hashes de senha e dados pessoais)
+auth_users.sqlite3*
