@@ -1,0 +1,5 @@
+schema: 1
+name: login-enter-campos-limpos
+description: Login enviado com Enter e campos limpos ao abrir /login
+status: completed
+created: 2026-11-23
