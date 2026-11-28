@@ -1504,9 +1504,19 @@ class CatalogState(rx.State):
                         brands.append(brand)
         return sorted(brands)
 
+class AdminOrder(TypedDict):
+    id: str
+    date: str
+    customer: str
+    items_summary: str
+    total_display: str
+    status: str
+
+
 class AdminState(rx.State):
     admin_tab: str = "produtos"
     admin_message: str = ""
+    all_orders: list[AdminOrder] = []
 
     # New product form fields
     new_prod_name: str = ""
@@ -1518,9 +1528,26 @@ class AdminState(rx.State):
     new_prod_warranty: str = ""
 
     @rx.event
-    def set_admin_tab(self, tab: str):
+    async def set_admin_tab(self, tab: str):
         self.admin_tab = tab
         self.admin_message = ""
+        if tab == "pedidos":
+            await self._refresh_all_orders()
+
+    @rx.event
+    async def load_all_orders(self):
+        """Evento (on_load do /admin) que recarrega a lista de pedidos."""
+        await self._refresh_all_orders()
+
+    async def _refresh_all_orders(self):
+        """Só administrador recebe os pedidos; para os demais a lista fica vazia."""
+        auth = await self.get_state(AuthState)
+        if not (auth.is_logged_in and auth.is_admin):
+            self.all_orders = []
+            return
+        from order_persistence import load_all_orders
+
+        self.all_orders = load_all_orders()
 
     @rx.event
     def set_new_prod_name(self, val: str):
@@ -1837,7 +1864,8 @@ class AuthState(rx.State):
         self.orders = []
         self.warranties = []
         self.logout_dialog_open = False
-        return rx.redirect("/")
+        # load_all_orders esvazia a lista quando quem está na sessão não é admin.
+        return [AdminState.load_all_orders, rx.redirect("/")]
 
     @rx.event
     def load_my_orders(self):
@@ -5670,6 +5698,28 @@ def profile_page() -> rx.Component:
         background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
     )
 
+def admin_order_card(order: rx.Var[AdminOrder]) -> rx.Component:
+    return rx.hstack(
+        rx.vstack(
+            rx.text("Pedido " + order["id"], color="#f5f3ff", font_weight="700", font_size="15px"),
+            rx.text(
+                "Cliente: " + order["customer"] + " • Data: " + order["date"],
+                color="#a1a1aa", font_size="13px", word_break="break-word",
+            ),
+            rx.text(order["items_summary"], color="#d4d4d8", font_size="13px"),
+            spacing="1", align="start", flex="1", min_width="0",
+        ),
+        rx.vstack(
+            rx.text(order["total_display"], color="#e9d5ff", font_weight="700", font_size="15px"),
+            rx.badge(order["status"], color_scheme="purple", variant="solid", size="1"),
+            spacing="1", align="end",
+        ),
+        width="100%", justify="between", align="center",
+        padding="16px", background="#11111a",
+        border="1px solid rgba(167, 139, 250, 0.2)", border_radius="12px",
+    )
+
+
 def admin_restricted() -> rx.Component:
     return rx.box(
         rx.vstack(
@@ -5972,22 +6022,13 @@ def admin_panel() -> rx.Component:
                                     rx.heading("Gerenciamento de Pedidos", size="6", color="#f5f3ff"),
                                     rx.text("Lista de pedidos realizados por clientes na plataforma.", color="#a1a1aa", font_size="14px"),
                                     rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
-                                    rx.vstack(
-                                        rx.hstack(
-                                            rx.vstack(
-                                                rx.text("Pedido #NF-84920", color="#f5f3ff", font_weight="700", font_size="15px"),
-                                                rx.text("Cliente: Diego Souza • Data: 26/10/2026", color="#a1a1aa", font_size="13px"),
-                                                spacing="1", align="start",
-                                            ),
-                                            rx.vstack(
-                                                rx.text("R$ 2.609,91", color="#e9d5ff", font_weight="700", font_size="15px"),
-                                                rx.badge("Concluído", color_scheme="green", variant="solid", size="1"),
-                                                spacing="1", align="end",
-                                            ),
-                                            width="100%", justify="between", align="center",
-                                            padding="16px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.2)", border_radius="12px",
+                                    rx.cond(
+                                        AdminState.all_orders.length() > 0,
+                                        rx.vstack(
+                                            rx.foreach(AdminState.all_orders, admin_order_card),
+                                            width="100%", spacing="3",
                                         ),
-                                        width="100%", spacing="3",
+                                        rx.text("Nenhum pedido registrado.", color="#a1a1aa", font_size="14px"),
                                     ),
                                     width="100%", spacing="4",
                                 ),
@@ -6051,4 +6092,9 @@ app.add_page(
     title="Meu Perfil | NightFall",
     on_load=[CatalogState.refresh_catalog, AuthState.load_my_orders],
 )
-app.add_page(admin_page, route="/admin", title="Painel Administrativo | NightFall", on_load=CatalogState.refresh_catalog)
+app.add_page(
+    admin_page,
+    route="/admin",
+    title="Painel Administrativo | NightFall",
+    on_load=[CatalogState.refresh_catalog, AdminState.load_all_orders],
+)
