@@ -8,7 +8,7 @@ import os
 import tempfile
 import threading
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, TypedDict
@@ -86,6 +86,37 @@ class AsaasCreditCardFormData(TypedDict):
 
 ASAAS_API_BASE_URL = "https://api-sandbox.asaas.com/v3"
 LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "::1"}
+
+
+COUPON_CODE = "NIGHTFALL10"
+COUPON_RATE = Decimal("0.10")
+
+
+def coupon_discount(subtotal: float, applied: bool) -> float:
+    """Valor do desconto do cupom sobre o subtotal, arredondado em centavos."""
+    if not applied:
+        return 0.0
+    cents = (Decimal(str(subtotal)) * COUPON_RATE).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    return float(cents)
+
+
+def profile_problem(
+    name: str, cpf: str, birth_date: str, *, today: date | None = None
+) -> str:
+    """Mensagem de erro dos dados do perfil, ou "" quando podem ser salvos."""
+    if not name.strip():
+        return "Informe um nome válido."
+    if not validate_cpf(cpf):
+        return "CPF inválido. Verifique o número informado."
+    try:
+        born = datetime.strptime(birth_date.strip(), "%d/%m/%Y").date()
+    except ValueError:
+        born = None
+    if born is None or born > (today or date.today()):
+        return "Data de nascimento inválida. Use DD/MM/AAAA."
+    return ""
 
 
 def simulated_payments_enabled() -> bool:
@@ -650,6 +681,12 @@ class CatalogState(rx.State):
     @rx.event
     def clear_cart(self):
         self.cart_items = []
+        self._reset_coupon()
+
+    def _reset_coupon(self):
+        self.coupon_code = ""
+        self.coupon_message = ""
+        self.coupon_applied = False
 
     @rx.var
     def cart_count(self) -> int:
@@ -667,9 +704,13 @@ class CatalogState(rx.State):
         return f"R$ {formatted}"
 
     coupon_code: str = ""
-    discount_amount: float = 0.0
     coupon_message: str = ""
     coupon_applied: bool = False
+
+    @rx.var
+    def discount_amount(self) -> float:
+        """Desconto calculado a partir do carrinho atual, nunca guardado."""
+        return coupon_discount(self.cart_total, self.coupon_applied)
 
     new_product_name: str = ""
     new_product_price: str = ""
@@ -897,22 +938,16 @@ class CatalogState(rx.State):
     @rx.event
     def apply_coupon(self):
         code = self.coupon_code.strip().upper()
-        if code == "NIGHTFALL10":
-            subtotal = sum(item["price"] * item["quantity"] for item in self.cart_items)
-            self.discount_amount = subtotal * 0.10
+        if code == COUPON_CODE:
             self.coupon_applied = True
             self.coupon_message = "Cupom NIGHTFALL10 aplicado (10% OFF)!"
         else:
-            self.discount_amount = 0.0
             self.coupon_applied = False
             self.coupon_message = "Cupom inválido."
 
     @rx.event
     def remove_coupon(self):
-        self.coupon_code = ""
-        self.discount_amount = 0.0
-        self.coupon_applied = False
-        self.coupon_message = ""
+        self._reset_coupon()
 
     @rx.var
     def cart_discount_display(self) -> str:
@@ -1020,6 +1055,7 @@ class CatalogState(rx.State):
         self.last_order_status = status_text
         self.payment_reference = ""
         self.cart_items = []
+        self._reset_coupon()
         return order_id
 
     @rx.event
@@ -1585,6 +1621,7 @@ class AuthState(rx.State):
     user_cpf: str = "123.456.789-09"
     user_birth_date: str = "15/05/1995"
     profile_message: str = ""
+    profile_saved: bool = False
     profile_tab: str = "dados"
     redirect_after_login: str = ""
     logout_dialog_open: bool = False
@@ -1758,11 +1795,31 @@ class AuthState(rx.State):
         self.profile_message = ""
 
     @rx.event
-    def save_profile(self):
-        if self.user_name.strip():
-            self.profile_message = "Dados cadastrais atualizados com sucesso!"
-        else:
-            self.profile_message = "Informe um nome válido."
+    async def save_profile(self):
+        from auth_persistence import AuthStorageError, save_profile
+
+        self.profile_saved = False
+        if not self.is_logged_in or not self.user_email:
+            self.profile_message = "Faça login para salvar seus dados."
+            return
+        problem = profile_problem(self.user_name, self.user_cpf, self.user_birth_date)
+        if problem:
+            self.profile_message = problem
+            return
+        try:
+            saved = await asyncio.to_thread(
+                save_profile,
+                self.user_email,
+                name=self.user_name,
+                cpf="".join(filter(str.isdigit, self.user_cpf)),
+                birth_date=self.user_birth_date,
+            )
+        except (AuthStorageError, ValueError):
+            self.profile_message = "Não foi possível salvar seus dados. Tente novamente."
+            return
+        self.user_name = saved["name"]
+        self.profile_saved = True
+        self.profile_message = "Dados cadastrais atualizados com sucesso!"
 
     @rx.event
     def set_logout_dialog_open(self, is_open: bool):
@@ -1861,7 +1918,7 @@ class LoginState(rx.State):
         self.login_succeeded = False
         self.is_submitting = True
         try:
-            from auth_persistence import AuthStorageError, authenticate_account
+            from auth_persistence import AuthStorageError, authenticate_account, load_profile
             from admin_auth import XanoUnavailable, check_env_admin, is_env_admin_email, xano_login
 
             account = None
@@ -1890,6 +1947,8 @@ class LoginState(rx.State):
                 accepted, is_admin, token = account is not None, False, ""
 
             if accepted:
+                # Dados salvos no perfil valem mais que os do cadastro ou do Xano.
+                profile = await asyncio.to_thread(load_profile, email)
                 self.login_message = "Login realizado com sucesso!"
                 self.login_succeeded = True
 
@@ -1902,15 +1961,19 @@ class LoginState(rx.State):
                 auth_state.orders = []
                 auth_state.warranties = []
                 auth_state._refresh_orders()
-                if account is not None:
-                    auth_state.user_name = account["name"]
+                saved = profile or account
+                if saved is not None and saved["name"]:
+                    auth_state.user_name = saved["name"]
                 elif xano_result is not None and xano_result.name:
                     auth_state.user_name = xano_result.name
                 else:
                     auth_state.user_name = email.split("@")[0].capitalize()
-                if account is not None and not is_env_admin:
-                    auth_state.user_cpf = format_cpf(account["cpf"])
-                    auth_state.user_birth_date = format_birth_date(account["birth_date"])
+                # Sem dados salvos, os campos ficam vazios (nunca os de outra pessoa).
+                auth_state.user_cpf = format_cpf(saved["cpf"]) if saved else ""
+                auth_state.user_birth_date = (
+                    format_birth_date(saved["birth_date"]) if saved else ""
+                )
+                auth_state.profile_message = ""
 
                 target = auth_state.redirect_after_login if auth_state.redirect_after_login else "/"
                 auth_state.redirect_after_login = ""
@@ -5165,7 +5228,11 @@ def profile_page() -> rx.Component:
                                 ),
                                 rx.cond(
                                     AuthState.profile_message != "",
-                                    rx.text(AuthState.profile_message, color="#4ade80", font_size="13px"),
+                                    rx.text(
+                                        AuthState.profile_message,
+                                        color=rx.cond(AuthState.profile_saved, "#4ade80", "#f87171"),
+                                        font_size="13px",
+                                    ),
                                     rx.fragment(),
                                 ),
                                 rx.button(
