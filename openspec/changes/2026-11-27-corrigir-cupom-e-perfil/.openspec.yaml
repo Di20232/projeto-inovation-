@@ -1,5 +1,5 @@
 schema: spec-driven
 name: corrigir-cupom-e-perfil
 description: Desconto do cupom recalculado pelo carrinho e dados do perfil gravados no banco local
-status: in-progress
+status: completed
 created: 2026-11-27
