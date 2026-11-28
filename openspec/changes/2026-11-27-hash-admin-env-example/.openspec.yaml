@@ -1,0 +1,5 @@
+schema: spec-driven
+name: hash-admin-env-example
+description: O .env.example deixa de trazer senha em texto puro no lugar do hash do admin
+status: completed
+created: 2026-11-27
