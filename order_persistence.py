@@ -22,6 +22,53 @@ def save_order_local(order_data: dict) -> dict:
         json.dump(orders, f, ensure_ascii=False, indent=2)
     return {"success": True, "source": "local_db", "order": order_data}
 
+def _format_total(order: dict) -> str:
+    """Total já formatado; pedidos sem `total_display` usam o campo numérico."""
+    if order.get("total_display"):
+        return str(order["total_display"])
+    total = order.get("total")
+    if isinstance(total, bool) or not isinstance(total, (int, float)):
+        return ""
+    formatted = f"{total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {formatted}"
+
+
+def load_all_orders(path: Path = ORDERS_FILE) -> list[dict]:
+    """Todos os pedidos salvos, do mais recente para o mais antigo (painel admin).
+
+    Quem chama precisa conferir antes que o usuário é administrador.
+    """
+    if not path.exists():
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            orders = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(orders, list):
+        return []
+
+    result: list[dict] = []
+    for order in reversed(orders):
+        if not isinstance(order, dict):
+            continue
+        items = [item for item in order.get("items") or [] if isinstance(item, dict)]
+        result.append(
+            {
+                "id": str(order.get("id", "")),
+                "date": str(order.get("date", "")),
+                "customer": str(order.get("user_email") or "Cliente não identificado"),
+                "items_summary": ", ".join(
+                    f"{item.get('quantity', 1)}x {item.get('name', 'Produto')}"
+                    for item in items
+                ),
+                "total_display": _format_total(order),
+                "status": str(order.get("status", "")),
+            }
+        )
+    return result
+
+
 def load_orders_for_email(email: str, path: Path = ORDERS_FILE) -> list[dict]:
     """Devolve o histórico de um cliente (mais recente primeiro) no formato de "Meus Pedidos".
 

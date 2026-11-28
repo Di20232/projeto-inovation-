@@ -1,0 +1,5 @@
+schema: spec-driven
+name: admin-pedidos-reais
+description: A aba Pedidos do painel lista os pedidos salvos no lugar de um exemplo fixo
+status: completed
+created: 2026-11-27
