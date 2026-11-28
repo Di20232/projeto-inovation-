@@ -18,6 +18,12 @@ from uuid import uuid4
 import httpx
 import reflex as rx
 from dotenv import load_dotenv
+from warranty import (
+    MAX_WARRANTY_MONTHS,
+    WarrantyItem,
+    load_warranties_for_email,
+    parse_warranty_months,
+)
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -39,6 +45,7 @@ class Product(TypedDict):
     description: str
     category: str
     specifications: list[Specification]
+    warranty_months: int
 
 class Category(TypedDict):
     name: str
@@ -50,6 +57,7 @@ class CartItem(TypedDict):
     price: float
     price_display: str
     quantity: int
+    warranty_months: int
 
 class AddressItem(TypedDict):
     id: str
@@ -401,6 +409,13 @@ def parse_catalog_data(data: list[Any]) -> list[Product]:
 
             specifications.append({"label": label.strip(), "value": value.strip()})
 
+        warranty_months = item.get("warranty_months", 0)
+        if type(warranty_months) is not int or not 0 <= warranty_months <= MAX_WARRANTY_MONTHS:
+            raise ValueError(
+                f"Garantia do produto {index} deve ser um número inteiro de meses, "
+                f"de 0 a {MAX_WARRANTY_MONTHS}."
+            )
+
         formatted_price = f"{Decimal(str(price)):,.2f}"
         formatted_price = formatted_price.replace(",", "X").replace(".", ",").replace("X", ".")
         products.append(
@@ -413,6 +428,7 @@ def parse_catalog_data(data: list[Any]) -> list[Product]:
                 "description": item["description"].strip(),
                 "category": category,
                 "specifications": specifications,
+                "warranty_months": warranty_months,
             }
         )
 
@@ -461,6 +477,7 @@ def _product_to_json(product: Product) -> dict[str, Any]:
             {"label": spec["label"], "value": spec["value"]}
             for spec in product["specifications"]
         ],
+        "warranty_months": product.get("warranty_months", 0),
     }
 
 
@@ -512,6 +529,7 @@ def build_product(
     image_url: str,
     source_url: str = "",
     other_specs: list[Specification] | None = None,
+    warranty_text: str = "",
 ) -> Product:
     """Monta um produto a partir do formulário do painel. Lança ValueError se inválido."""
     name = name.strip()
@@ -538,6 +556,7 @@ def build_product(
     url = urlparse(image_url)
     if url.scheme not in {"http", "https"} or not url.netloc:
         raise ValueError("Informe a URL da foto, começando com http:// ou https://.")
+    warranty_months = parse_warranty_months(warranty_text)
 
     specs: list[Specification] = [
         s for s in (other_specs or []) if s["label"].lower() != "marca"
@@ -556,6 +575,7 @@ def build_product(
         "description": description,
         "category": category,
         "specifications": specs,
+        "warranty_months": warranty_months,
     }
 
 class CatalogState(rx.State):
@@ -606,6 +626,7 @@ class CatalogState(rx.State):
                 "price": product["price"],
                 "price_display": product["price_display"],
                 "quantity": 1,
+                "warranty_months": product.get("warranty_months", 0),
             }]
         self.cart_open = True
 
@@ -656,6 +677,7 @@ class CatalogState(rx.State):
     new_product_brand: str = ""
     new_product_description: str = ""
     new_product_image_url: str = ""
+    new_product_warranty: str = ""
     admin_message: str = ""
 
     @rx.event
@@ -681,6 +703,10 @@ class CatalogState(rx.State):
     @rx.event
     def set_new_product_image_url(self, val: str):
         self.new_product_image_url = val
+
+    @rx.event
+    def set_new_product_warranty(self, val: str):
+        self.new_product_warranty = val
 
     admin_error: bool = False
 
@@ -710,6 +736,7 @@ class CatalogState(rx.State):
                 brand=self.new_product_brand,
                 description=self.new_product_description,
                 image_url=self.new_product_image_url,
+                warranty_text=self.new_product_warranty,
             )
 
             def change(products: list[Product]) -> list[Product]:
@@ -730,6 +757,7 @@ class CatalogState(rx.State):
         self.new_product_brand = ""
         self.new_product_description = ""
         self.new_product_image_url = ""
+        self.new_product_warranty = ""
 
     @rx.event
     async def delete_product(self, product_name: str):
@@ -754,6 +782,7 @@ class CatalogState(rx.State):
     edit_brand: str = ""
     edit_description: str = ""
     edit_image_url: str = ""
+    edit_warranty: str = ""
     edit_error: str = ""
 
     @rx.event
@@ -781,6 +810,10 @@ class CatalogState(rx.State):
         self.edit_image_url = val
 
     @rx.event
+    def set_edit_warranty(self, val: str):
+        self.edit_warranty = val
+
+    @rx.event
     def set_edit_dialog_open(self, is_open: bool):
         self.edit_dialog_open = is_open
         if not is_open:
@@ -803,6 +836,7 @@ class CatalogState(rx.State):
         self.edit_brand = brand
         self.edit_description = product["description"]
         self.edit_image_url = product["image_url"]
+        self.edit_warranty = str(product.get("warranty_months", 0))
         self.edit_error = ""
         self.edit_dialog_open = True
 
@@ -826,6 +860,7 @@ class CatalogState(rx.State):
                 image_url=self.edit_image_url,
                 source_url=current.get("source_url", ""),
                 other_specs=current["specifications"],
+                warranty_text=self.edit_warranty,
             )
             if edited["name"] != original and any(p["name"] == edited["name"] for p in products):
                 raise ValueError(f"Já existe um produto chamado '{edited['name']}'.")
@@ -848,6 +883,7 @@ class CatalogState(rx.State):
                 item["price"] = saved["price"]
                 item["price_display"] = saved["price_display"]
                 item["image_url"] = saved["image_url"]
+                item["warranty_months"] = saved["warranty_months"]
         self.cart_items = list(self.cart_items)
 
         self.edit_dialog_open = False
@@ -1443,6 +1479,7 @@ class AdminState(rx.State):
     new_prod_description: str = ""
     new_prod_image_url: str = ""
     new_prod_brand: str = ""
+    new_prod_warranty: str = ""
 
     @rx.event
     def set_admin_tab(self, tab: str):
@@ -1474,6 +1511,10 @@ class AdminState(rx.State):
         self.new_prod_brand = val
 
     @rx.event
+    def set_new_prod_warranty(self, val: str):
+        self.new_prod_warranty = val
+
+    @rx.event
     async def add_product(self):
         name = self.new_prod_name.strip()
         cat = self.new_prod_category.strip()
@@ -1494,6 +1535,7 @@ class AdminState(rx.State):
                 brand=brand,
                 description=desc,
                 image_url=img,
+                warranty_text=self.new_prod_warranty,
             )
 
             def change(products: list[Product]) -> list[Product]:
@@ -1514,6 +1556,7 @@ class AdminState(rx.State):
         self.new_prod_description = ""
         self.new_prod_image_url = ""
         self.new_prod_brand = ""
+        self.new_prod_warranty = ""
 
     @rx.event
     async def delete_catalog_product(self, product_name: str):
@@ -1546,7 +1589,7 @@ class AuthState(rx.State):
     redirect_after_login: str = ""
     logout_dialog_open: bool = False
     orders: list[dict] = []
-    warranties: list[dict] = []
+    warranties: list[WarrantyItem] = []
 
     addresses: list[AddressItem] = [
         {
@@ -1691,6 +1734,8 @@ class AuthState(rx.State):
     @rx.event
     def set_profile_tab(self, tab: str):
         self.profile_tab = tab
+        if tab == "garantia":
+            self._refresh_warranties()
 
     @rx.event
     def set_user_phone(self, phone: str):
@@ -1733,13 +1778,25 @@ class AuthState(rx.State):
         self.user_email = ""
         self._auth_token = ""
         self.orders = []
+        self.warranties = []
         self.logout_dialog_open = False
         return rx.redirect("/")
 
     @rx.event
     def load_my_orders(self):
-        """Evento (on_load do /perfil) que recarrega "Meus Pedidos"."""
+        """Evento (on_load do /perfil) que recarrega "Meus Pedidos" e "Garantia"."""
         self._refresh_orders()
+        self._refresh_warranties()
+
+    def _refresh_warranties(self):
+        """Recalcula as garantias a partir dos pedidos do cliente logado."""
+        if not self.is_logged_in or not self.user_email:
+            self.warranties = []
+            return
+        catalog_months = {
+            p["name"]: p.get("warranty_months", 0) for p in current_catalog()
+        }
+        self.warranties = load_warranties_for_email(self.user_email, catalog_months)
 
     def _refresh_orders(self):
         """Carrega "Meus Pedidos" do orders_db.json pelo e-mail do cliente logado.
@@ -1843,6 +1900,7 @@ class LoginState(rx.State):
                 auth_state._auth_token = token
                 auth_state.user_email = email
                 auth_state.orders = []
+                auth_state.warranties = []
                 auth_state._refresh_orders()
                 if account is not None:
                     auth_state.user_name = account["name"]
@@ -2091,6 +2149,7 @@ class RegistrationState(rx.State):
                 auth_state.user_name = name
                 auth_state.user_email = email
                 auth_state.orders = []
+                auth_state.warranties = []
                 auth_state._refresh_orders()
                 auth_state.user_cpf = format_cpf(cpf)
                 auth_state.user_birth_date = format_birth_date(birth_date)
@@ -4764,6 +4823,31 @@ _EDIT_INPUT_STYLE = dict(
 )
 
 
+def warranty_card(item: rx.Var[WarrantyItem]) -> rx.Component:
+    return rx.hstack(
+        rx.vstack(
+            rx.text(item["product_name"], color="#f5f3ff", font_weight="700", font_size="15px"),
+            rx.text(
+                "Pedido " + item["order_id"] + " • Compra: " + item["purchase_date"],
+                color="#a1a1aa", font_size="13px",
+            ),
+            rx.text(
+                item["months_display"] + " • Válida até " + item["expiry_date"],
+                color="#e9d5ff", font_size="13px",
+            ),
+            spacing="1", align="start",
+        ),
+        rx.badge(
+            item["status"],
+            color_scheme=rx.cond(item["active"], "green", "gray"),
+            variant="solid", size="1",
+        ),
+        width="100%", justify="between", align="center",
+        padding="16px", background="#11111a",
+        border="1px solid rgba(167, 139, 250, 0.2)", border_radius="12px",
+    )
+
+
 def admin_edit_product_dialog() -> rx.Component:
     return rx.dialog.root(
         rx.dialog.content(
@@ -4812,6 +4896,11 @@ def admin_edit_product_dialog() -> rx.Component:
                 _edit_field("URL da Foto do Produto", rx.input(
                     value=CatalogState.edit_image_url, on_change=CatalogState.set_edit_image_url,
                     aria_label="URL da foto do produto", placeholder="https://exemplo.com/imagem.png",
+                    **_EDIT_INPUT_STYLE,
+                )),
+                _edit_field("Garantia (meses)", rx.input(
+                    value=CatalogState.edit_warranty, on_change=CatalogState.set_edit_warranty,
+                    aria_label="Garantia do produto em meses", placeholder="0 = sem garantia",
                     **_EDIT_INPUT_STYLE,
                 )),
                 rx.cond(
@@ -5144,7 +5233,14 @@ def profile_page() -> rx.Component:
                                         rx.heading("Garantia de Produtos", size="6", color="#f5f3ff"),
                                         rx.text("Consulte a vigência e termos de garantia dos seus hardwares.", color="#a1a1aa", font_size="14px"),
                                         rx.divider(border_color="rgba(167, 139, 250, 0.16)", margin_y="8px"),
-                                        rx.text("Nenhum produto cadastrado com garantia ativa no momento. Os hardwares adquiridos em pedidos concluídos aparecerão aqui.", color="#a1a1aa", font_size="14px", padding_y="16px"),
+                                        rx.cond(
+                                            AuthState.warranties.length() > 0,
+                                            rx.vstack(
+                                                rx.foreach(AuthState.warranties, warranty_card),
+                                                width="100%", spacing="3",
+                                            ),
+                                            rx.text("Nenhum produto com garantia no momento. Os produtos com garantia aparecem aqui depois da compra.", color="#a1a1aa", font_size="14px", padding_y="16px"),
+                                        ),
                                         width="100%",
                                         spacing="4",
                                     ),
@@ -5429,6 +5525,17 @@ def profile_page() -> rx.Component:
                                                         ),
                                                         width="100%", spacing="2", align="start",
                                                     ),
+                                                    rx.vstack(
+                                                        rx.text("Garantia (meses)", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                                        rx.input(
+                                                            value=CatalogState.new_product_warranty,
+                                                            on_change=CatalogState.set_new_product_warranty,
+                                                            placeholder="Ex: 12 (vazio = sem garantia)",
+                                                            aria_label="Garantia do novo produto em meses",
+                                                            width="100%", height="40px", background="#11111a", border="1px solid rgba(167, 139, 250, 0.24)", border_radius="8px", color="#f5f3ff"
+                                                        ),
+                                                        width="100%", spacing="2", align="start",
+                                                    ),
                                                     rx.button(
                                                         "Cadastrar Produto",
                                                         on_click=CatalogState.add_product,
@@ -5696,6 +5803,22 @@ def admin_page() -> rx.Component:
                                         value=AdminState.new_prod_image_url,
                                         on_change=AdminState.set_new_prod_image_url,
                                         placeholder="https://exemplo.com/imagem.png",
+                                        width="100%",
+                                        height="42px",
+                                        background="#11111a",
+                                        border="1px solid rgba(167, 139, 250, 0.24)",
+                                        border_radius="10px",
+                                        color="#f5f3ff",
+                                    ),
+                                    width="100%", spacing="2", align="start",
+                                ),
+                                rx.vstack(
+                                    rx.text("Garantia (meses)", color="#e4e4e7", font_size="13px", font_weight="600"),
+                                    rx.input(
+                                        value=AdminState.new_prod_warranty,
+                                        on_change=AdminState.set_new_prod_warranty,
+                                        placeholder="Ex: 12 (vazio = sem garantia)",
+                                        aria_label="Garantia do produto em meses",
                                         width="100%",
                                         height="42px",
                                         background="#11111a",

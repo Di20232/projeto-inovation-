@@ -1,0 +1,5 @@
+schema: spec-driven
+name: garantia-produtos
+description: Cadastro de garantia no painel administrativo e aba Garantia do cliente preenchida a partir das compras
+status: in-progress
+created: 2026-11-27
