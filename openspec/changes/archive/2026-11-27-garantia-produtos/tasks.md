@@ -6,4 +6,4 @@
 - [x] 4. Preencher a aba "Garantia" do perfil.
 - [x] 5. Compilar, rodar os testes locais (59 aprovados) e testar no navegador, em cópia isolada: valor inválido recusado; produto novo com 24 meses e mouse editado para 12 aparecem como ativos na aba do cliente.
 - [x] 6. Aprovação do responsável pelo projeto em 2026-11-27, commit e PR.
-- [ ] 7. Merge na `main`.
+- [x] 7. Merge na `main` pelo PR #2 em 2026-11-27.
