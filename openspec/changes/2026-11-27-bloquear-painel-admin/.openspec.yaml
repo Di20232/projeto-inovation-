@@ -1,0 +1,5 @@
+schema: spec-driven
+name: bloquear-painel-admin
+description: A página /admin só desenha o painel para administrador
+status: in-progress
+created: 2026-11-27

@@ -5670,7 +5670,36 @@ def profile_page() -> rx.Component:
         background="radial-gradient(ellipse at 50% 42%, rgba(91, 33, 182, 0.18), transparent 38%), radial-gradient(ellipse at 12% 8%, rgba(76, 29, 149, 0.12), transparent 28%), #0b0b12",
     )
 
+def admin_restricted() -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            rx.heading("Acesso Restrito", size="6", color="#f5f3ff"),
+            rx.text(
+                "Entre com uma conta de administrador para acessar o painel.",
+                color="#a1a1aa", font_size="14px", text_align="center",
+            ),
+            rx.link(
+                rx.button("Fazer Login", color_scheme="purple"),
+                href="/login",
+            ),
+            rx.link("← Voltar à Loja", href="/", color="#c4b5fd", font_size="14px"),
+            spacing="4", align="center",
+            padding="32px", max_width="420px",
+            background="linear-gradient(145deg, rgba(24, 20, 36, 0.96), rgba(15, 14, 22, 0.98))",
+            border="1px solid rgba(167, 139, 250, 0.18)",
+            border_radius="20px",
+        ),
+        display="flex", justify_content="center", align_items="center",
+        min_height="100vh", width="100%", padding="20px", background="#0b0b12",
+    )
+
+
 def admin_page() -> rx.Component:
+    """O painel só é desenhado para administrador; as ações também conferem no servidor."""
+    return rx.cond(AuthState.is_admin, admin_panel(), admin_restricted())
+
+
+def admin_panel() -> rx.Component:
     return rx.box(
         rx.vstack(
             # Header
